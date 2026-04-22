@@ -1,5 +1,10 @@
 # Build DLPulse (Flet) desktop bundles on Linux, Windows, and macOS.
 # Triggers: push to main/master, version tags v*, manual workflow_dispatch.
+#
+# Releases on GitHub:
+# - Push tag ``v*`` (e.g. v1.0.0) → release named after the tag + release notes.
+# - Push to ``main`` / ``master`` → prerelease ``continuous`` (tag ``continuous``),
+#   so artifacts appear without creating a version tag.
 
 name: Build DLPulse
 
@@ -134,12 +139,20 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      success() &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -168,9 +181,34 @@ jobs:
         run: |
           test "$(find release-assets -type f | wc -l)" -ge 1
 
-      - uses: softprops/action-gh-release@v2
+      - name: Move "continuous" tag to this commit (main/master only)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa continuous -m "Continuous build" "${GITHUB_SHA}"
+          git push origin refs/tags/continuous --force
+
+      - name: GitHub Release (version tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: DLPulse ${{ github.ref_name }}
           files: release-assets/*
           generate_release_notes: true
+
+      - name: GitHub Release (continuous / default branch)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: DLPulse (continuous)
+          body: |
+            Automated build from `${{ github.sha }}`.
+
+            For a **stable** release, push a version tag (e.g. `v1.0.0`); each `v*` tag gets its own GitHub Release.
+          prerelease: true
+          allowUpdates: true
+          make_latest: false
+          files: release-assets/*
