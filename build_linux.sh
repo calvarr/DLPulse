@@ -118,15 +118,17 @@ BUILD_DIR="$ROOT/build/linux"
 info "Gata → $BUILD_DIR"
 
 if [[ "$MAKE_APPIMAGE" == true ]]; then
-    if ! command -v appimagetool &>/dev/null; then
+    if [[ -f "$ROOT/packaging/linux/make_appimage.sh" ]]; then
+        bash "$ROOT/packaging/linux/make_appimage.sh" "$ROOT" || warn "make_appimage.sh a eșuat."
+    elif ! command -v appimagetool &>/dev/null; then
         warn "appimagetool nu e pe PATH."
     else
-        APPDIR="$BUILD_DIR/dlpulse.AppDir"
-        if [[ -d "$APPDIR" ]]; then
-            appimagetool "$APPDIR" "$ROOT/build/DLPulse-x86_64.AppImage"
+        APPDIR="$(find "$BUILD_DIR" -maxdepth 3 -type d -name '*.AppDir' -print -quit 2>/dev/null || true)"
+        if [[ -n "$APPDIR" ]]; then
+            ARCH=x86_64 appimagetool "$APPDIR" "$ROOT/build/DLPulse-x86_64.AppImage"
             info "AppImage: $ROOT/build/DLPulse-x86_64.AppImage"
         else
-            warn "Nu există $APPDIR — verifică structura din $BUILD_DIR"
+            warn "Nu s-a găsit .AppDir sub $BUILD_DIR"
         fi
     fi
 fi

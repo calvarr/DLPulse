@@ -37,7 +37,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.target }})
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -82,12 +82,24 @@ jobs:
         shell: bash
         run: printf '%s\n' "${GITHUB_SHA}" > flet_app/build_commit.txt
 
+      - name: Install appimagetool (Linux)
+        if: matrix.target == 'linux'
+        run: |
+          set -e
+          curl -fsSL -o /tmp/appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+
       - name: flet build linux
         if: matrix.target == 'linux'
         env:
           CFLAGS: "-Wno-macro-redefined"
           CXXFLAGS: "-Wno-macro-redefined"
         run: flet build linux --yes
+
+      - name: Build AppImage (Linux)
+        if: matrix.target == 'linux'
+        run: bash packaging/linux/make_appimage.sh .
 
       # Rich Live + cp1252 on GHA Windows → UnicodeEncodeError (e.g. ● U+25CF).
       - name: flet build windows
@@ -97,9 +109,21 @@ jobs:
           PYTHONIOENCODING: "utf-8"
         run: flet build windows --yes --no-rich-output
 
+      - name: Install NSIS (Windows)
+        if: matrix.target == 'windows'
+        run: choco install nsis --yes --no-progress
+
+      - name: Build NSIS installer (Windows)
+        if: matrix.target == 'windows'
+        run: pwsh -NoProfile -File packaging/windows/build_installer.ps1 "${{ github.workspace }}"
+
       - name: flet build macos
         if: matrix.target == 'macos'
         run: flet build macos --yes
+
+      - name: Build DMG (macOS)
+        if: matrix.target == 'macos'
+        run: bash packaging/macos/make_dmg.sh .
 
       - uses: actions/upload-artifact@v4
         with:
@@ -122,7 +146,7 @@ jobs:
           pattern: dlpulse-*
           merge-multiple: false
 
-      - name: Zip artifacts
+      - name: Zip artifacts and stage installers for release
         run: |
           set -e
           cd artifacts
@@ -131,16 +155,22 @@ jobs:
             base="${d%/}"
             zip -r "${base}.zip" "$d"
           done
-          ls -la
+          cd ..
+          mkdir -p release-assets
+          shopt -s nullglob
+          for z in artifacts/*.zip; do
+            [ -f "$z" ] && cp -f "$z" release-assets/
+          done
+          find artifacts -type f \( -name "DLPulse-x86_64.AppImage" -o -name "DLPulse-Setup.exe" -o -name "DLPulse.dmg" \) -exec cp -f {} release-assets/ \; || true
+          ls -la release-assets/
 
-      - name: Verify release artifacts
+      - name: Verify release assets
         run: |
-          ls -la artifacts/
-          test "$(ls -1 artifacts/*.zip 2>/dev/null | wc -l)" -ge 1
+          test "$(find release-assets -type f | wc -l)" -ge 1
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: DLPulse ${{ github.ref_name }}
-          files: artifacts/*.zip
+          files: release-assets/*
           generate_release_notes: true
