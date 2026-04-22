@@ -97,7 +97,11 @@ from ytdlp_update import (
     pip_upgrade_ytdlp,
     reload_ytdlp_module,
 )
-from github_update import GITHUB_PROJECT_URL, check_app_github_update
+from github_update import (
+    GITHUB_PROJECT_URL,
+    GITHUB_RELEASES_LATEST_URL,
+    check_app_github_update,
+)
 
 _AUDIO_SUFFIXES = frozenset(
     {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav", ".wma", ".m4b", ".alac"}
@@ -2157,6 +2161,9 @@ def main(page: ft.Page) -> None:
     async def on_open_github_project(_: ft.ControlEvent) -> None:
         await page.launch_url(GITHUB_PROJECT_URL)
 
+    async def on_open_github_releases(_: ft.ControlEvent) -> None:
+        await page.launch_url(GITHUB_RELEASES_LATEST_URL)
+
     tab_about_app = ft.Container(
         content=ft.Column(
             [
@@ -2179,6 +2186,24 @@ def main(page: ft.Page) -> None:
                     "Open repository on GitHub",
                     icon=ft.Icons.OPEN_IN_NEW,
                     on_click=on_open_github_project,
+                ),
+                ft.Container(height=10),
+                ft.Text("Pre-built downloads", weight=ft.FontWeight.W_600, size=14, color=ft.Colors.TEAL_200),
+                ft.Text(
+                    "Latest GitHub Release (ZIP per platform). For a public repository you do not need an account to download.",
+                    size=12,
+                    color=ft.Colors.GREY_400,
+                ),
+                ft.Text(
+                    GITHUB_RELEASES_LATEST_URL,
+                    size=13,
+                    color=ft.Colors.TEAL_100,
+                    selectable=True,
+                ),
+                ft.OutlinedButton(
+                    "Open latest release",
+                    icon=ft.Icons.DOWNLOAD_OUTLINED,
+                    on_click=on_open_github_releases,
                 ),
                 ft.Container(height=8),
                 ft.Text("How to download from other sites", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),

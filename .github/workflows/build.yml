@@ -133,7 +133,14 @@ jobs:
           done
           ls -la
 
+      - name: Verify release artifacts
+        run: |
+          ls -la artifacts/
+          test "$(ls -1 artifacts/*.zip 2>/dev/null | wc -l)" -ge 1
+
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: DLPulse ${{ github.ref_name }}
           files: artifacts/*.zip
           generate_release_notes: true
