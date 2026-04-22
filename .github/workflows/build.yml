@@ -1,0 +1,131 @@
+# Build DLPulse (Flet) desktop bundles on Linux, Windows, and macOS.
+# Triggers: push to main/master, version tags v*, manual workflow_dispatch.
+
+name: Build DLPulse
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux
+            artifact_path: build
+            artifact_name: dlpulse-linux
+
+          - os: windows-latest
+            target: windows
+            artifact_path: build
+            artifact_name: dlpulse-windows
+
+          - os: macos-latest
+            target: macos
+            artifact_path: build
+            artifact_name: dlpulse-macos
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.target }})
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Linux system packages
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config libgtk-3-dev libglib2.0-dev \
+            libblkid-dev liblzma-dev patchelf cmake clang
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Pin a stable Flutter; bump if flet build complains about SDK mismatch.
+          flutter-version: "3.27.4"
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor (summary)
+        run: flutter doctor -v
+
+      - name: Install Python project + deps
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install -e .
+          pip install -r flet_app/requirements.txt
+          pip install -r desktop_tui/requirements.txt
+
+      - name: Ensure app icon (pyproject references flet_app/icon.png)
+        run: |
+          if [ ! -f flet_app/icon.png ]; then
+            cp -f flet_app/cofe.png flet_app/icon.png
+          fi
+        shell: bash
+
+      - name: flet build linux
+        if: matrix.target == 'linux'
+        env:
+          CFLAGS: "-Wno-macro-redefined"
+          CXXFLAGS: "-Wno-macro-redefined"
+        run: flet build linux --yes
+
+      - name: flet build windows
+        if: matrix.target == 'windows'
+        run: flet build windows --yes
+
+      - name: flet build macos
+        if: matrix.target == 'macos'
+        run: flet build macos --yes
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: dlpulse-*
+          merge-multiple: false
+
+      - name: Zip artifacts
+        run: |
+          set -e
+          cd artifacts
+          for d in */; do
+            [ -d "$d" ] || continue
+            base="${d%/}"
+            zip -r "${base}.zip" "$d"
+          done
+          ls -la
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true
