@@ -1,0 +1,9 @@
+# Rulare / build Flet (fără TUI Textual). Din rădăcina repo: pip install -r flet_app/requirements.txt
+flet>=0.84.0
+flet-cli>=0.84.0
+mutagen>=1.47.0
+packaging>=23.0
+yt-dlp>=2024.1.1
+Flask>=3.0.0
+pychromecast>=14.0.0
+zeroconf>=0.132.0

@@ -1,0 +1,5 @@
+.venv/
+build/
+__pycache__/
+*.pyc
+flet_app/.yt_flet_settings.json
