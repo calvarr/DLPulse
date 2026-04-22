@@ -74,9 +74,12 @@ $bridgeCode = "import runpy`nrunpy.run_module('flet_app.main', run_name='__main_
 Set-Content -Path "$Root\main.py" -Value $bridgeCode -Encoding UTF8
 
 Info "Pornesc: flet build windows …"
-$fletArgs = @("build", "windows", "--module-name", "main", "--yes")
+# --no-rich-output: evită UnicodeEncodeError (cp1252) la Rich Live pe consolă Windows.
+$fletArgs = @("build", "windows", "--module-name", "main", "--yes", "--no-rich-output")
 if ($ExtraArgs) { $fletArgs += $ExtraArgs }
 
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $env:FLET_DISPLAY_LEVEL = "info"
 $process = Start-Process -FilePath $FletExe -ArgumentList $fletArgs -NoNewWindow -Wait -PassThru
 $fletCode = $process.ExitCode

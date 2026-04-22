@@ -146,3 +146,17 @@ def mark_ytdlp_pypi_checked() -> None:
     data = _read_settings()
     data["ytdlp_pypi_last_check_ts"] = time.time()
     _write_settings(data)
+
+
+def get_github_update_dismissed_main_sha() -> str | None:
+    """If set, banner for that ``main`` tip was dismissed by the user."""
+    s = (_read_settings().get("github_update_dismissed_main_sha") or "").strip()
+    return s[:40] if len(s) >= 7 else None
+
+
+def set_github_update_dismissed_main_sha(sha: str) -> None:
+    data = _read_settings()
+    data["github_update_dismissed_main_sha"] = (sha or "").strip()[:40]
+    if "download_dir" not in data:
+        data["download_dir"] = str(get_downloads_dir())
+    _write_settings(data)

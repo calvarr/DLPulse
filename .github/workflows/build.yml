@@ -78,6 +78,10 @@ jobs:
           fi
         shell: bash
 
+      - name: Record commit SHA for in-app GitHub update checks
+        shell: bash
+        run: printf '%s\n' "${GITHUB_SHA}" > flet_app/build_commit.txt
+
       - name: flet build linux
         if: matrix.target == 'linux'
         env:
@@ -85,9 +89,13 @@ jobs:
           CXXFLAGS: "-Wno-macro-redefined"
         run: flet build linux --yes
 
+      # Rich Live + cp1252 on GHA Windows → UnicodeEncodeError (e.g. ● U+25CF).
       - name: flet build windows
         if: matrix.target == 'windows'
-        run: flet build windows --yes
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: flet build windows --yes --no-rich-output
 
       - name: flet build macos
         if: matrix.target == 'macos'

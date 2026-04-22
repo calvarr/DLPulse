@@ -80,11 +80,13 @@ from paths import (
     get_audio_player_command,
     get_cast_discovery_wait_s,
     get_downloads_dir,
+    get_github_update_dismissed_main_sha,
     get_video_player_command,
     mark_ytdlp_pypi_checked,
     set_audio_player_command,
     set_cast_discovery_wait_s,
     set_downloads_dir,
+    set_github_update_dismissed_main_sha,
     set_video_player_command,
     should_check_ytdlp_pypi,
 )
@@ -95,6 +97,7 @@ from ytdlp_update import (
     pip_upgrade_ytdlp,
     reload_ytdlp_module,
 )
+from github_update import GITHUB_PROJECT_URL, check_app_github_update
 
 _AUDIO_SUFFIXES = frozenset(
     {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav", ".wma", ".m4b", ".alac"}
@@ -374,6 +377,7 @@ def main(page: ft.Page) -> None:
     st.ytdlp_update_available = False
     st.ytdlp_pypi_latest: str | None = None
     st.ytdlp_update_note: str | None = None
+    st.github_banner_remote_sha: str | None = None  # tip of main when banner was last shown (for dismiss)
 
     def effective_search_download_dir() -> Path:
         if st.search_session_dir is not None:
@@ -2150,6 +2154,9 @@ def main(page: ft.Page) -> None:
         shadow=_TAB_PANEL_SHADOW,
     )
 
+    async def on_open_github_project(_: ft.ControlEvent) -> None:
+        await page.launch_url(GITHUB_PROJECT_URL)
+
     tab_about_app = ft.Container(
         content=ft.Column(
             [
@@ -2159,6 +2166,19 @@ def main(page: ft.Page) -> None:
                     "yt-dlp supports a very large list of sites — not only YouTube.",
                     size=13,
                     color=ft.Colors.GREY_300,
+                ),
+                ft.Container(height=6),
+                ft.Text("Project page", weight=ft.FontWeight.W_600, size=14, color=ft.Colors.TEAL_200),
+                ft.Text(
+                    GITHUB_PROJECT_URL,
+                    size=13,
+                    color=ft.Colors.TEAL_100,
+                    selectable=True,
+                ),
+                ft.OutlinedButton(
+                    "Open repository on GitHub",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    on_click=on_open_github_project,
                 ),
                 ft.Container(height=8),
                 ft.Text("How to download from other sites", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
@@ -2247,6 +2267,78 @@ def main(page: ft.Page) -> None:
     )
     st.main_tabs = tabs
 
+    async def on_github_banner_open(_: ft.ControlEvent) -> None:
+        await page.launch_url(GITHUB_PROJECT_URL)
+
+    async def on_github_banner_dismiss(_: ft.ControlEvent) -> None:
+        if st.github_banner_remote_sha:
+            set_github_update_dismissed_main_sha(st.github_banner_remote_sha)
+        github_update_banner.visible = False
+        page.update()
+
+    github_banner_msg = ft.Text(
+        "",
+        size=12,
+        color=ft.Colors.GREY_100,
+        expand=True,
+    )
+    github_update_banner = ft.Container(
+        visible=False,
+        padding=ft.Padding.only(left=12, right=8, top=10, bottom=10),
+        bgcolor=ft.Colors.with_opacity(0.22, ft.Colors.TEAL_900),
+        border=ft.Border.all(1, ft.Colors.with_opacity(0.45, ft.Colors.TEAL_400)),
+        border_radius=10,
+        content=ft.Row(
+            [
+                ft.Icon(ft.Icons.NEW_RELEASES, color=ft.Colors.TEAL_200, size=22),
+                github_banner_msg,
+                ft.TextButton("Open GitHub", on_click=on_github_banner_open),
+                ft.IconButton(
+                    icon=ft.Icons.CLOSE,
+                    tooltip="Dismiss until main advances again on GitHub",
+                    icon_size=20,
+                    icon_color=ft.Colors.GREY_400,
+                    on_click=on_github_banner_dismiss,
+                ),
+            ],
+            spacing=8,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+    async def _apply_github_update_check() -> None:
+        try:
+            info = await asyncio.to_thread(check_app_github_update)
+        except Exception:
+            return
+        dismissed = get_github_update_dismissed_main_sha()
+        if not info.show_banner:
+            github_update_banner.visible = False
+            page.update()
+            return
+        if (
+            info.remote_main_sha
+            and dismissed
+            and dismissed.lower() == info.remote_main_sha.lower()
+        ):
+            github_update_banner.visible = False
+            page.update()
+            return
+        github_banner_msg.value = info.message
+        st.github_banner_remote_sha = info.remote_main_sha
+        github_update_banner.visible = True
+        page.update()
+
+    async def _github_check_after_startup_delay() -> None:
+        await asyncio.sleep(2.8)
+        await _apply_github_update_check()
+
+    async def _github_update_poll_loop() -> None:
+        while True:
+            await asyncio.sleep(6 * 3600)
+            await _apply_github_update_check()
+
     page.add(
         ft.Container(
             content=ft.Column(
@@ -2270,6 +2362,7 @@ def main(page: ft.Page) -> None:
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
+                    github_update_banner,
                     dl_queue,
                     tabs,
                 ],
@@ -2316,6 +2409,8 @@ def main(page: ft.Page) -> None:
                 pass
 
     page.run_task(_ytdlp_pypi_check_task)
+    page.run_task(_github_check_after_startup_delay)
+    page.run_task(_github_update_poll_loop)
 
     refresh_library()
     refresh_search_dl_folder_label()
