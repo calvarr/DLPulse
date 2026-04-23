@@ -233,7 +233,13 @@ async def show_folder_browser_dialog(
             ],
         )
 
-        title_w = ft.Text(p.name, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1, expand=True)
+        name_label = ft.Text(
+            p.name,
+            expand=True,
+            overflow=ft.TextOverflow.ELLIPSIS,
+            max_lines=1,
+            text_align=ft.TextAlign.END,
+        )
 
         return ft.Container(
             content=ft.Row(
@@ -243,11 +249,15 @@ async def show_folder_browser_dialog(
                         size=22,
                         color=ft.Colors.TEAL_200 if is_dir else ft.Colors.BLUE_GREY_300,
                     ),
-                    ft.Container(
-                        content=ft.TextButton(
-                            content=title_w,
-                            on_click=lambda e: asyncio.create_task(on_main_click(e)),
-                            style=ft.ButtonStyle(padding=4),
+                    ft.TextButton(
+                        content=ft.Row(
+                            [name_label],
+                            alignment=ft.MainAxisAlignment.END,
+                            expand=True,
+                        ),
+                        on_click=lambda e: asyncio.create_task(on_main_click(e)),
+                        style=ft.ButtonStyle(
+                            padding=ft.padding.symmetric(horizontal=8, vertical=4),
                         ),
                         expand=True,
                     ),
@@ -265,11 +275,30 @@ async def show_folder_browser_dialog(
         async def open_drive(_: ft.ControlEvent) -> None:
             await go_to(d)
 
+        drive_label = ft.Text(
+            str(d),
+            expand=True,
+            overflow=ft.TextOverflow.ELLIPSIS,
+            max_lines=1,
+            text_align=ft.TextAlign.END,
+            weight=ft.FontWeight.W_500,
+        )
         return ft.Container(
-            content=ft.ListTile(
-                leading=ft.Icon(ft.Icons.STORAGE, color=ft.Colors.AMBER_200),
-                title=ft.Text(str(d), weight=ft.FontWeight.W_500),
-                on_click=lambda e: asyncio.create_task(open_drive(e)),
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.STORAGE, color=ft.Colors.AMBER_200),
+                    ft.TextButton(
+                        content=ft.Row(
+                            [drive_label],
+                            alignment=ft.MainAxisAlignment.END,
+                            expand=True,
+                        ),
+                        on_click=lambda e: asyncio.create_task(open_drive(e)),
+                        style=ft.ButtonStyle(padding=ft.padding.symmetric(horizontal=8, vertical=4)),
+                        expand=True,
+                    ),
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             bgcolor=ft.Colors.with_opacity(0.06, ft.Colors.WHITE),
             border_radius=6,
@@ -293,12 +322,29 @@ async def show_folder_browser_dialog(
 
         parent = current_dir.parent
         if parent != current_dir:
+            up_label = ft.Text(
+                "..",
+                expand=True,
+                text_align=ft.TextAlign.END,
+                weight=ft.FontWeight.W_500,
+            )
             list_view.controls.append(
                 ft.Container(
-                    content=ft.ListTile(
-                        leading=ft.Icon(ft.Icons.ARROW_UPWARD, color=ft.Colors.TEAL_300),
-                        title=ft.Text("..", weight=ft.FontWeight.W_500),
-                        on_click=lambda e: asyncio.create_task(go_to(parent)),
+                    content=ft.Row(
+                        [
+                            ft.Icon(ft.Icons.ARROW_UPWARD, color=ft.Colors.TEAL_300),
+                            ft.TextButton(
+                                content=ft.Row(
+                                    [up_label],
+                                    alignment=ft.MainAxisAlignment.END,
+                                    expand=True,
+                                ),
+                                on_click=lambda e: asyncio.create_task(go_to(parent)),
+                                style=ft.ButtonStyle(padding=ft.padding.symmetric(horizontal=8, vertical=4)),
+                                expand=True,
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     bgcolor=ft.Colors.with_opacity(0.06, ft.Colors.WHITE),
                     border_radius=6,
