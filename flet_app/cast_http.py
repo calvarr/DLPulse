@@ -8,12 +8,15 @@ registered Chromecast is stopped automatically (nothing left to stream).
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
-from flask import Flask, abort, request, send_file
+from flask import Flask, Response, abort, redirect, request, send_file, stream_with_context
 from werkzeug.exceptions import RequestedRangeNotSatisfiable
 from werkzeug.utils import secure_filename
 
@@ -248,6 +251,86 @@ def serve_stream(rel_path: str):
     return _serve_media_file(rel_path)
 
 
+def _allowed_remote_page_url(u: str) -> bool:
+    """Limitează ``/remote_stream`` la URL-uri de pagină (YouTube etc.), nu proxy arbitrar."""
+    try:
+        p = urlparse((u or "").strip())
+    except Exception:
+        return False
+    if p.scheme not in ("http", "https"):
+        return False
+    host = (p.netloc or "").lower().split("@")[-1].split(":")[0]
+    if host in ("youtu.be", "www.youtu.be", "m.youtu.be"):
+        return True
+    if host in ("music.youtube.com", "www.youtube.com", "m.youtube.com", "youtube.com"):
+        return True
+    return host.endswith(".youtube.com")
+
+
+@app.route("/remote_stream")
+def remote_stream():
+    """
+    Redare fără descărcare în player: extrage fluxul cu yt-dlp.
+    - Un singur URL progresiv / direct → redirect 302.
+    - DASH (video + audio): dacă există ``ffmpeg``, mux Matroska spre player; altfel redirect doar la video.
+    """
+    page = (request.args.get("u") or "").strip()
+    if not page or not _allowed_remote_page_url(page):
+        abort(400)
+    from yt_core import extract_single_http_stream_url, extract_split_video_audio_stream_urls
+
+    direct = extract_single_http_stream_url(page)
+    if direct:
+        return redirect(direct, code=302)
+    pair = extract_split_video_audio_stream_urls(page)
+    ffmpeg = shutil.which("ffmpeg")
+    if pair and ffmpeg:
+        v_url, a_url = pair
+
+        def _gen():
+            proc: subprocess.Popen | None = None
+            _media_transfer_started()
+            try:
+                proc = subprocess.Popen(
+                    [
+                        ffmpeg,
+                        "-nostdin",
+                        "-loglevel",
+                        "error",
+                        "-i",
+                        v_url,
+                        "-i",
+                        a_url,
+                        "-c",
+                        "copy",
+                        "-f",
+                        "matroska",
+                        "pipe:1",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                if proc.stdout is None:
+                    return
+                while True:
+                    chunk = proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+                _media_transfer_ended()
+
+        resp = Response(stream_with_context(_gen()), mimetype="video/x-matroska")
+        resp.headers["Content-Disposition"] = "inline"
+        resp.headers["Accept-Ranges"] = "none"
+        return resp
+    if pair:
+        return redirect(pair[0], code=302)
+    abort(502)
+
+
 _server_thread: threading.Thread | None = None
 _server_port: int = 0
 _server_instance = None  # werkzeug BaseWSGIServer, for shutdown
@@ -261,6 +344,11 @@ def is_cast_server_running() -> bool:
         and _server_port > 0
         and _server_instance is not None
     )
+
+
+def get_cast_server_port() -> int:
+    """Portul efectiv al serverului Flask (0 dacă nu rulează)."""
+    return int(_server_port or 0)
 
 
 def start_cast_server(host: str = "0.0.0.0", port: int = 0) -> int:

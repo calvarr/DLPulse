@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 import shutil
 import subprocess
@@ -61,7 +62,15 @@ from yt_core import (
     search_youtube,
     youtube_url_for_single_video_download,
 )
-from cast_http import guess_mime_for_cast, media_url, start_cast_server, stop_cast_server, stream_url, is_cast_server_running
+from cast_http import (
+    get_cast_server_port,
+    guess_mime_for_cast,
+    is_cast_server_running,
+    media_url,
+    start_cast_server,
+    stop_cast_server,
+    stream_url,
+)
 from chromecast_helper import (
     discover_chromecasts,
     get_lan_ip,
@@ -268,11 +277,41 @@ def play_media_files(paths: list[Path]) -> None:
     subprocess.Popen([*argv, pl_str])
 
 
+def _resolve_external_player_argv_for_stream() -> list[str] | None:
+    """
+    Player pentru fluxuri (Search & Download): întâi comanda din Settings,
+    apoi mpv / VLC din PATH (sau căi uzuale pe Windows/macOS).
+    Nu folosește browserul implicit (xdg-open / startfile pe URL YouTube).
+    """
+    cmd = (get_video_player_command() or "").strip()
+    if cmd:
+        argv = shlex.split(cmd, posix=os.name != "nt")
+        return argv if argv else None
+    exe = shutil.which("mpv")
+    if exe:
+        return [exe]
+    exe = shutil.which("vlc")
+    if exe:
+        return [exe]
+    if sys.platform == "win32":
+        for p in (
+            r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+            r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
+        ):
+            if os.path.isfile(p):
+                return [p]
+    if sys.platform == "darwin":
+        vlc = "/Applications/VLC.app/Contents/MacOS/VLC"
+        if os.path.isfile(vlc):
+            return [vlc]
+    return None
+
+
 def play_stream_urls(urls: list[str]) -> None:
     """
-    Redă URL-uri (YouTube etc.) în playerul configurat, fără a descărca fișiere.
-    Pentru YouTube, **mpv** e preferat (VLC rezolvă adesea la URL googlevideo care expiră).
-    Altfel: comanda video din setări, apoi mpv / vlc, apoi browser.
+    Redă URL-uri de pagină (YouTube etc.) fără descărcare, prin relay-ul local
+    ``http://127.0.0.1:<port>/remote_stream?u=…`` (redirect sau mux ffmpeg),
+    ca în player să intre un flux media, nu deschiderea browserului pe youtube.com.
     """
     clean: list[str] = []
     for u in urls:
@@ -282,30 +321,24 @@ def play_stream_urls(urls: list[str]) -> None:
         clean.append(youtube_url_for_single_video_download(t))
     if not clean:
         raise ValueError("No URLs to play.")
-    any_yt = any(
-        "youtube.com" in x.lower() or "youtu.be" in x.lower() for x in clean
-    )
-    mpv_bin = shutil.which("mpv")
-    if any_yt and mpv_bin:
-        subprocess.Popen([mpv_bin, *clean])
-        return
-    cmd = (get_video_player_command() or "").strip()
-    if cmd:
-        argv = shlex.split(cmd, posix=os.name != "nt")
-        if argv:
-            subprocess.Popen([*argv, *clean])
-            return
-    for exe in ("mpv", "vlc"):
-        resolved = shutil.which(exe)
-        if resolved:
-            subprocess.Popen([resolved, *clean])
-            return
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", clean[0]])
-    elif sys.platform == "win32":
-        os.startfile(clean[0])  # type: ignore[attr-defined]
-    else:
-        subprocess.Popen(["xdg-open", clean[0]])
+
+    argv = _resolve_external_player_argv_for_stream()
+    if not argv:
+        raise ValueError(
+            "No video player found. Install mpv or VLC, or set “Video player command” in Settings."
+        )
+
+    if not is_cast_server_running():
+        start_cast_server(port=0)
+    port = get_cast_server_port()
+    if port <= 0:
+        raise RuntimeError("Local stream server did not start (cannot build /remote_stream URLs).")
+
+    relay = [
+        f"http://127.0.0.1:{port}/remote_stream?u={quote(u, safe='')}"
+        for u in clean
+    ]
+    subprocess.Popen([*argv, *relay])
 
 
 def _format_duration_hms(seconds: float) -> str:
@@ -446,7 +479,7 @@ def main(page: ft.Page) -> None:
             return
         try:
             async with async_busy(
-                "Search & Download — starting stream(s) in external player (mpv / VLC / browser)…",
+                "Search & Download — opening local stream relay in your video player…",
                 min_display_s=0.45,
             ):
                 await asyncio.to_thread(play_stream_urls, cleaned)

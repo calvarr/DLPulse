@@ -539,3 +539,127 @@ def search_youtube(query: str, max_results: int = 10) -> list[dict]:
             thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
         result.append({"id": vid, "title": title, "url": url, "thumbnail": thumb or ""})
     return result
+
+
+def _best_progressive_url_from_formats(formats: list | tuple) -> str | None:
+    """Alege un singur URL (video+audio în același flux), preferând mp4 / înălțimi rezonabile."""
+    best: tuple[int, str] | None = None  # (height, url)
+    for f in formats or []:
+        if not isinstance(f, dict):
+            continue
+        u = f.get("url")
+        if not isinstance(u, str) or not u.startswith("http"):
+            continue
+        ac, vc = f.get("acodec"), f.get("vcodec")
+        if not ac or ac == "none" or not vc or vc == "none":
+            continue
+        h = f.get("height")
+        try:
+            hi = int(h) if h is not None else 0
+        except (TypeError, ValueError):
+            hi = 0
+        if best is None or hi > best[0]:
+            best = (hi, u)
+    return best[1] if best else None
+
+
+def extract_single_http_stream_url(page_url: str) -> str | None:
+    """
+    Un singur URL HTTPS redabil direct (ex. progressive YouTube), sau None dacă
+    e nevoie doar de DASH separat / extragerea a eșuat.
+    """
+    url = youtube_url_for_single_video_download(page_url)
+    if not url:
+        return None
+    cookiefile = _cookiefile_path()
+    base_opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "ignoreerrors": False,
+        "logger": _YtdlpQuietLogger(),
+        "noplaylist": True,
+    }
+    if cookiefile:
+        base_opts["cookiefile"] = cookiefile
+
+    format_try = [
+        "best[vcodec!=none][acodec!=none][protocol^=http][protocol!=http_dash_segments][protocol!=m3u8_native]/best[vcodec!=none][acodec!=none]/18/22/best",
+        "best[vcodec!=none][acodec!=none]/best",
+        "best",
+    ]
+    for extra in (_youtube_opts_extra(), {}):
+        for fmt in format_try:
+            opts = {**base_opts, **extra, "format": fmt}
+            if fmt == "best":
+                opts.pop("merge_output_format", None)
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception:
+                continue
+            if not info:
+                continue
+            u = info.get("url")
+            if isinstance(u, str) and u.startswith("http"):
+                return u
+            prog = _best_progressive_url_from_formats(info.get("formats") or [])
+            if prog:
+                return prog
+    return None
+
+
+def extract_split_video_audio_stream_urls(page_url: str) -> tuple[str, str] | None:
+    """Pentru DASH: (video_url, audio_url). None dacă nu se obțin două fluxuri."""
+    url = youtube_url_for_single_video_download(page_url)
+    if not url:
+        return None
+    cookiefile = _cookiefile_path()
+    base_opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "ignoreerrors": False,
+        "logger": _YtdlpQuietLogger(),
+        "noplaylist": True,
+        "format": "bestvideo+bestaudio/bestvideo+ba/best",
+    }
+    if cookiefile:
+        base_opts["cookiefile"] = cookiefile
+    for extra in (_youtube_opts_extra(), {}):
+        opts = {**base_opts, **extra}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception:
+            continue
+        if not info:
+            continue
+        rf = info.get("requested_formats")
+        if not isinstance(rf, list) or len(rf) < 2:
+            continue
+        vurl: str | None = None
+        aurl: str | None = None
+        for x in rf:
+            if not isinstance(x, dict):
+                continue
+            u = x.get("url")
+            if not isinstance(u, str) or not u.startswith("http"):
+                continue
+            vc = (x.get("vcodec") or "none") != "none"
+            ac = (x.get("acodec") or "none") != "none"
+            if vc and not ac:
+                vurl = u
+            elif ac and not vc:
+                aurl = u
+        if vurl and aurl:
+            return (vurl, aurl)
+        urls: list[str] = []
+        for x in rf:
+            if isinstance(x, dict):
+                u = x.get("url")
+                if isinstance(u, str) and u.startswith("http"):
+                    urls.append(u)
+        if len(urls) >= 2:
+            return (urls[0], urls[1])
+    return None

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 SETTINGS_JSON = Path(__file__).resolve().parent / ".yt_flet_settings.json"
@@ -8,8 +10,40 @@ SETTINGS_JSON = Path(__file__).resolve().parent / ".yt_flet_settings.json"
 _cached_root: Path | None = None
 
 
+def default_user_downloads_dir() -> Path:
+    """
+    Folderul „Downloads” al utilizatorului (XDG pe Linux dacă e disponibil).
+    Folosit ca destinație implicită pentru descărcări + library înainte de configurare.
+    """
+    if sys.platform == "linux":
+        try:
+            out = subprocess.run(
+                ["xdg-user-dir", "DOWNLOAD"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            p = (out.stdout or "").strip()
+            if p and Path(p).is_dir():
+                return Path(p).expanduser().resolve()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    home = Path.home()
+    for name in ("Downloads", "Descărcări", "Téléchargements", "Загрузки"):
+        cand = home / name
+        if cand.is_dir():
+            return cand.resolve()
+    d = home / "Downloads"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d.resolve()
+
+
 def _default_root() -> Path:
-    return Path(__file__).resolve().parent / "downloads"
+    return default_user_downloads_dir()
 
 
 def _read_settings() -> dict:
