@@ -13,7 +13,6 @@ GITHUB_REPO = "calvarr/DLPulse"
 GITHUB_PROJECT_URL = f"https://github.com/{GITHUB_REPO}"
 # Public repo: users can download builds without a GitHub account.
 GITHUB_RELEASES_URL = f"{GITHUB_PROJECT_URL}/releases"
-GITHUB_RELEASES_LATEST_URL = f"{GITHUB_RELEASES_URL}/latest"
 _API_BASE = f"https://api.github.com/repos/{GITHUB_REPO}"
 _HEADERS = {
     "Accept": "application/vnd.github+json",
