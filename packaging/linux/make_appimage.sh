@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Rulează după ``flet build linux`` din rădăcina repo-ului ``yt/``.
-# - Dacă există ``*.AppDir`` (Flet vechi): îl folosește direct.
-# - Altfel: asamblează AppDir din bundle-ul plat din ``build/linux/``
-#   (binary + data/ + lib/ + …) și produce ``build/DLPulse-x86_64.AppImage``.
+# Run after ``flet build linux`` from the repo root ``yt/``.
+# - If ``*.AppDir`` exists (older Flet): use it as-is.
+# - Else: assemble AppDir from the flat bundle under ``build/linux/``
+#   (binary + data/ + lib/ + …) and write ``build/DLPulse-x86_64.AppImage``.
 set -euo pipefail
 ROOT="${1:-.}"
 cd "$ROOT"
 
 if ! command -v appimagetool &>/dev/null; then
-  echo "appimagetool nu e pe PATH."
+  echo "appimagetool is not on PATH."
   exit 1
 fi
 
 BUNDLE="build/linux"
 if [[ ! -d "$BUNDLE" ]]; then
-  echo "Lipsește $BUNDLE — rulează mai întâi: flet build linux"
+  echo "Missing $BUNDLE — run first: flet build linux"
   exit 1
 fi
 
@@ -22,11 +22,11 @@ APPDIR=""
 EXISTING="$(find "$BUNDLE" -maxdepth 5 -type d -name '*.AppDir' -print -quit 2>/dev/null || true)"
 if [[ -n "$EXISTING" ]]; then
   APPDIR="$EXISTING"
-  echo "Folosesc AppDir existent: $APPDIR"
+  echo "Using existing AppDir: $APPDIR"
 else
-  # Bundle Flet nou: fără .AppDir, doar structură tip Flutter + Python lângă binary.
+  # New Flet bundle: no .AppDir, Flutter + Python layout next to the binary.
   if [[ ! -d "$BUNDLE/data/flutter_assets" ]]; then
-    echo "Nu e nici .AppDir, nici bundle Flet recunoscut (lipsește $BUNDLE/data/flutter_assets):"
+    echo "Neither .AppDir nor a recognized Flet bundle (missing $BUNDLE/data/flutter_assets):"
     find "$BUNDLE" -maxdepth 3 -type d 2>/dev/null | head -40 || true
     exit 1
   fi
@@ -49,12 +49,12 @@ else
     done < <(find "$BUNDLE" -maxdepth 1 -type f -print0 2>/dev/null || true)
   fi
   if [[ -z "$MAIN" ]] || [[ ! -f "$MAIN" ]]; then
-    echo "Nu s-a găsit binary ELF executabil în $BUNDLE (maxdepth 1):"
+    echo "No ELF executable found in $BUNDLE (maxdepth 1):"
     find "$BUNDLE" -maxdepth 1 -type f -ls 2>/dev/null || true
     exit 1
   fi
   BIN_BASENAME="$(basename "$MAIN")"
-  echo "Binary principal: $BIN_BASENAME"
+  echo "Main binary: $BIN_BASENAME"
 
   APPDIR="build/DLPulse.AppDir"
   rm -rf "$APPDIR"
@@ -102,14 +102,14 @@ EOF
   } > "$APPDIR/dlpulse.desktop"
 
   chmod +x "$APPDIR/usr/bin/$BIN_BASENAME" 2>/dev/null || true
-  echo "AppDir asamblat: $APPDIR"
+  echo "AppDir assembled: $APPDIR"
 fi
 
 OUT="build/DLPulse-x86_64.AppImage"
 mkdir -p build
 rm -f "$OUT"
 export ARCH=x86_64
-# Fără metadate AppStream pe CI (evită avertismente / eșecuri).
+# Skip AppStream metadata on CI (avoids warnings / failures).
 if appimagetool --help 2>&1 | grep -q no-appstream; then
   appimagetool --no-appstream "$APPDIR" "$OUT"
 else

@@ -1,6 +1,6 @@
 ; NSIS installer for DLPulse (Flet Windows ``runner\Release`` output).
 ; makensis /DSOURCE_DIR=C:/path/to/stage /DEXE_NAME=dlpulse.exe DLPulse.nsi
-; OutFile relativ la acest fișier → ../../build/DLPulse-Setup.exe
+; OutFile is relative to this script → ../../build/DLPulse-Setup.exe
 
 Unicode true
 

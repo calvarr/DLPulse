@@ -12,8 +12,8 @@ _cached_root: Path | None = None
 
 def default_user_downloads_dir() -> Path:
     """
-    Folderul „Downloads” al utilizatorului (XDG pe Linux dacă e disponibil).
-    Folosit ca destinație implicită pentru descărcări + library înainte de configurare.
+    The user's Downloads folder (XDG on Linux when available).
+    Used as the default save location for downloads and library before Settings are saved.
     """
     if sys.platform == "linux":
         try:
@@ -30,6 +30,7 @@ def default_user_downloads_dir() -> Path:
         except (OSError, subprocess.TimeoutExpired):
             pass
     home = Path.home()
+    # Common localized system folder names (not UI strings).
     for name in ("Downloads", "Descărcări", "Téléchargements", "Загрузки"):
         cand = home / name
         if cand.is_dir():

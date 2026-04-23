@@ -4,7 +4,7 @@ version = "1.0.1"
 description = "DLPulse — media downloader with Chromecast support"
 requires-python = ">=3.11"
 
-# Dependențe pentru bundle Flet; opțional ``pip install -e ".[tui]"`` pentru Textual CLI/TUI.
+# Flet bundle dependencies; optional ``pip install -e ".[tui]"`` for the Textual CLI/TUI.
 dependencies = [
     "flet>=0.24.0",
     "yt-dlp>=2024.1.0",
@@ -30,16 +30,16 @@ product_name = "DLPulse"
 company = "calvarr"
 
 [tool.flet.linux]
-# flet build linux produce un folder; pentru AppImage: appimagetool (vezi build_linux.sh)
-# Uncomment dacă vrei să specifici o iconiță separată pentru Linux:
+# flet build linux outputs a folder; for AppImage use appimagetool (see build_linux.sh)
+# Uncomment to set a separate Linux icon:
 # icon = "flet_app/icon.png"
 
 [tool.flet.windows]
-# Versiunea afișată în Add/Remove Programs
+# Version shown in Add/Remove Programs
 file_version = "1.0.1.0"
 
 [tool.flet.macos]
-# macOS necesită semnare (code signing) pentru distribuție; build-ul local funcționează fără
+# macOS needs code signing for distribution; local unsigned builds still run for development
 bundle_version = "1.0.1"
 
 [build-system]
@@ -48,4 +48,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["flet_app", "desktop_tui"]
-# desktop_tui rămâne pachet Python pentru app.py / pure_cli (fără duplicate cast în folder).
+# desktop_tui stays a Python package for app.py / pure_cli (no duplicate cast_* in tree).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pornește aplicația Flet din rădăcina repo-ului (yt/).
+# Start the Flet app from the repo root (yt/).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

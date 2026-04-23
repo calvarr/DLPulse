@@ -1,5 +1,5 @@
 """
-Logică comună pentru DLPulse (CLI și Web).
+Shared download / YouTube logic for DLPulse (CLI, TUI, and Flet app).
 """
 import os
 import random
@@ -25,7 +25,7 @@ class _YtdlpQuietLogger:
         pass
 
 
-# Cookies: YT_COOKIES_FILE sau YT_COOKIES_PATH (env), altfel cookies.txt în folderul proiectului
+# Cookies: YT_COOKIES_FILE or YT_COOKIES_PATH (env), else cookies.txt next to this module.
 def _cookiefile_path() -> str | None:
     path = os.environ.get("YT_COOKIES_FILE") or os.environ.get("YT_COOKIES_PATH")
     if path and os.path.isfile(path):
@@ -46,9 +46,9 @@ def _youtube_opts_extra() -> dict[str, Any]:
 
 def normalize_youtube_radio_mix_url(url: str) -> str:
     """
-    - Mix / Radio (list=RD...): păstrăm doar videoclipul curent (v= / youtu.be).
-    - Watch + playlist real (list=PL..., OL..., etc., nu RD): folosim URL canonical de playlist,
-      altfel yt-dlp poate trata greșit combinația watch?v=…&list=… (ex. eșec la un clip privat din listă).
+    - Mix / Radio (list=RD...): keep only the current video (v= / youtu.be).
+    - Watch + real playlist (list=PL..., OL..., etc., not RD): use canonical playlist URL,
+      otherwise yt-dlp may mishandle watch?v=…&list=… (e.g. failure on a private item in the list).
     """
     u = (url or "").strip()
     if not u:
@@ -90,9 +90,9 @@ def normalize_youtube_radio_mix_url(url: str) -> str:
 
 def youtube_url_for_single_video_download(url: str) -> str:
     """
-    Pentru descărcare: reduce la ``https://www.youtube.com/watch?v=VIDEO_ID`` (fără ``list=``).
-    Intrările flat din playlist includ adesea ``watch?v=…&list=PL…``; dacă le normalizăm la
-    ``playlist?list=…``, yt-dlp descarcă iar întreg playlistul în loc de clipul bifat.
+    For single-video download: collapse to ``https://www.youtube.com/watch?v=VIDEO_ID`` (no ``list=``).
+    Flat playlist rows often have ``watch?v=…&list=PL…``; if we normalize to ``playlist?list=…``,
+    yt-dlp would download the whole playlist again instead of the ticked clip.
     """
     u = (url or "").strip()
     if not u:
@@ -117,8 +117,8 @@ def youtube_url_for_single_video_download(url: str) -> str:
     return u
 
 
-# Fallback programatic: încercăm fiecare format în ordine (evită "format not available")
-# besteffort = cel mai permisiv, acceptă orice e disponibil
+# Programmatic fallbacks: try each format in order (avoids "format not available").
+# besteffort = most permissive, accepts whatever is available.
 FORMATS_VIDEO_TO_TRY = [
     "bestvideo[ext=mp4]+bestaudio[ext=m4a]",
     "bestvideo[ext=mp4]+bestaudio",
@@ -145,21 +145,21 @@ FORMATS_AUDIO_TO_TRY = [
 ]
 
 FORMAT_PRESETS = [
-    ("Video – cea mai bună calitate (video+audio)", "bestvideo+bestaudio", None),
+    ("Video — best quality (video+audio)", "bestvideo+bestaudio", None),
     ("Video 1080p", "bestvideo[height<=1080]+bestaudio", None),
     ("Video 720p", "bestvideo[height<=720]+bestaudio", None),
     ("Video 480p", "bestvideo[height<=480]+bestaudio", None),
     ("Video 360p", "bestvideo[height<=360]+bestaudio", None),
-    ("Doar audio – MP3 320 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}]),
-    ("Doar audio – MP3 192 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "2"}]),
-    ("Doar audio – MP3 128 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "5"}]),
-    ("Doar audio – M4A (AAC)", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}]),
-    ("Doar audio – OPUS", "bestaudio/best", None),
+    ("Audio only — MP3 320 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}]),
+    ("Audio only — MP3 192 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "2"}]),
+    ("Audio only — MP3 128 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "5"}]),
+    ("Audio only — M4A (AAC)", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}]),
+    ("Audio only — OPUS", "bestaudio/best", None),
 ]
 
 
 def extract_url_info(url: str, extract_flat: bool = False, *, normalize_url: bool = True) -> dict | None:
-    """Extrage informații despre URL fără a descărca."""
+    """Extract metadata for a URL without downloading."""
     import sys
 
     if normalize_url:
@@ -196,7 +196,7 @@ def extract_url_info(url: str, extract_flat: bool = False, *, normalize_url: boo
 
 
 def get_playlist_count(info: dict) -> int:
-    """Returnează numărul de intrări dintr-un playlist/canal."""
+    """Return the number of entries in a playlist or channel tab."""
     if not info:
         return 0
     entries = info.get("entries") or []
@@ -208,34 +208,34 @@ def get_playlist_count(info: dict) -> int:
 
 
 def detect_content_type(info: dict) -> tuple[str, str]:
-    """Detectează tipul: 'video', 'playlist', 'channel'. Returnează (tip, descriere)."""
+    """Detect type: 'video', 'playlist', or 'channel'. Returns (type, description)."""
     if not info:
-        return "unknown", "Nu s-a putut determina"
+        return "unknown", "Could not determine type"
     kind = (info.get("_type") or "video").lower()
-    title = info.get("title") or "Fără titlu"
+    title = info.get("title") or "Untitled"
 
     if kind == "playlist":
         count = get_playlist_count(info)
         if "channel" in (info.get("extractor") or "").lower() or (
             info.get("id") and "UC" in str(info.get("id", ""))
         ):
-            return "channel", f"Canal: {title} ({count} videoclipuri)"
-        return "playlist", f"Playlist: {title} ({count} videoclipuri)"
-    return "video", f"Videoclip: {title}"
+            return "channel", f"Channel: {title} ({count} videos)"
+        return "playlist", f"Playlist: {title} ({count} videos)"
+    return "video", f"Video: {title}"
 
 
 def get_format_preset(index: int) -> tuple[str, dict] | None:
-    """Returnează (format_spec, opts_extra) pentru preset-ul dat (0-based)."""
+    """Return (format_spec, opts_extra) for the given preset index (0-based)."""
     if index < 0 or index >= len(FORMAT_PRESETS):
         return None
     _, format_spec, postprocessors = FORMAT_PRESETS[index]
     opts_extra: dict[str, Any] = {}
     if postprocessors:
         opts_extra["postprocessors"] = postprocessors
-    # Video: forțează mp4 după merge (bestvideo+bestaudio)
+    # Video: force mp4 after merge (bestvideo+bestaudio)
     if index <= 4:
         opts_extra["merge_output_format"] = "mp4"
-    # MP4 video (0–4) și MP3 (5–7): thumbnail + metadata în fișier (copertă la redare)
+    # MP4 video (0–4) and MP3 (5–7): embed thumbnail + metadata for playback
     if index <= 4 or index in (5, 6, 7):
         opts_extra["writethumbnail"] = True
         opts_extra["embedthumbnail"] = True
@@ -284,12 +284,12 @@ def run_download(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[bool, list[str], str | None]:
     """
-    Rulează yt-dlp cu fallback programatic: încearcă format_spec, apoi lista de formate
-    până când unul reușește. Returnează (success, listă nume fișiere, mesaj_eroare sau None).
-    Dacă no_playlist=True, descarcă doar primul videoclip (echivalent --no-playlist).
+    Run yt-dlp with programmatic fallbacks: try format_spec, then the format list until one succeeds.
+    Returns (success, list of new filenames, error message or None).
+    If no_playlist=True, download only the first video (same as --no-playlist).
 
-    progress_callback: apelat din thread-ul yt-dlp cu dict-uri
-    {message, fraction, filename?, title?} — fraction 0..1 sau None; filename = basename cu extensie când e cunoscut.
+    progress_callback: invoked from the yt-dlp thread with dicts
+    {message, fraction, filename?, title?} — fraction 0..1 or None; filename is basename when known.
     """
     import sys
 
@@ -383,7 +383,7 @@ def run_download(
     formats_to_try = [format_spec] + (
         FORMATS_VIDEO_TO_TRY if is_video_preset else FORMATS_AUDIO_TO_TRY
     )
-    # Fără duplicate, păstrând ordinea
+    # De-duplicate while preserving order
     seen = set()
     formats_to_try = [f for f in formats_to_try if f not in seen and not seen.add(f)]
 
@@ -421,19 +421,19 @@ def run_download(
         # Audio preset: merge video+audio so FFmpeg can extract MP3/M4A when pure bestaudio* is missing.
         if fmt == "bv*+ba/b" and not is_video_preset:
             opts["merge_output_format"] = "mp4"
-        # La fallback (nu primul = preset) nu folosim format_sort — poate exclude formate pe unele clipuri
+        # On fallbacks (not the first = preset) drop format_sort — it can exclude formats on some videos
         if i > 0 and "format_sort" in opts:
             opts = {k: v for k, v in opts.items() if k != "format_sort"}
         if is_video_preset and i == 0:
             opts.setdefault("format_sort", ["res:1080", "ext:mp4:m4a", "tbr", "filesize"])
-        # best/besteffort/worst = single stream, nu merge
+        # best/besteffort/worst = single stream, not merged
         if fmt in ("best", "besteffort", "worst") and "merge_output_format" in opts:
             opts = {k: v for k, v in opts.items() if k != "merge_output_format"}
-        # besteffort: fără extractor_args (player_client=web) — unele clipuri au formate doar cu client implicit
+        # besteffort: drop extractor_args (player_client=web) — some videos only work with default client
         if fmt == "besteffort":
             for key in ("extractor_args", "sleep_interval", "sleep_interval_requests", "ratelimit"):
                 opts.pop(key, None)
-        # Ultimă șansă (worst): opțiuni minime (fără extractor_args), dar cu cookies dacă există
+        # Last resort (worst): minimal options (no extractor_args), still with cookies if present
         if fmt == "worst":
             opts = {
                 "format": "worst",
@@ -457,11 +457,11 @@ def run_download(
             last_err = None
             break
         except Exception as e:
-            last_err = str(e).strip() or "Eroare necunoscută"
+            last_err = str(e).strip() or "Unknown error"
             if _is_format_not_available(e):
                 print("yt-dlp: format %r not available, trying next…" % (fmt,), file=sys.stderr)
                 continue
-            # Altă eroare (geo, cookies, etc.) — nu mai încercăm alte formate
+            # Other error (geo, cookies, etc.) — do not try more formats
             print("yt-dlp download error:", last_err, file=sys.stderr)
             return False, [], last_err
 
@@ -478,13 +478,13 @@ def fetch_playlist_entries(
     url: str, max_entries: int = 500, *, normalize_url: bool = True
 ) -> tuple[list[dict], str | None]:
     """
-    Listează intrările dintr-un playlist / tab de canal (flat), fără descărcare.
-    Returnează ([{id, title, url, thumbnail}, ...], mesaj_eroare sau None).
-    Pentru Mix YouTube (``list=RD…``), folosește ``normalize_url=False`` și URL-ul original.
+    List entries from a playlist or channel tab (flat), without downloading.
+    Returns ([{id, title, url, thumbnail}, ...], error message or None).
+    For YouTube Mix (``list=RD…``), use ``normalize_url=False`` and the original URL.
     """
     info = extract_url_info(url, extract_flat=True, normalize_url=normalize_url)
     if not info:
-        return [], "Nu s-a putut accesa URL-ul."
+        return [], "Could not access the URL."
     if info.get("_type") != "playlist":
         return [], None
     entries = info.get("entries") or []
@@ -500,8 +500,8 @@ def fetch_playlist_entries(
             vid = u.split("watch?v=")[-1].split("&")[0].strip()
         if not vid:
             continue
-        title = e.get("title") or "Fără titlu"
-        # Evită &list=… pe URL-ul din rând — altfel descărcarea poate fi tratată ca playlist.
+        title = e.get("title") or "Untitled"
+        # Avoid &list=… on row URLs — otherwise download may be treated as a playlist.
         if isinstance(vid, str) and len(vid) == 11 and not vid.startswith("UC"):
             page_url = f"https://www.youtube.com/watch?v={vid}"
         else:
@@ -515,7 +515,7 @@ def fetch_playlist_entries(
 
 
 def search_youtube(query: str, max_results: int = 10) -> list[dict]:
-    """Caută pe YouTube și returnează lista de rezultate [{id, title, url, thumbnail}]."""
+    """Search YouTube and return [{id, title, url, thumbnail}, ...]."""
     search_url = f"ytsearch{max_results}:{query}"
     info = extract_url_info(search_url, extract_flat=True)
     if not info or info.get("_type") != "playlist":
@@ -530,9 +530,9 @@ def search_youtube(query: str, max_results: int = 10) -> list[dict]:
         vid = e.get("id") or (e.get("url") or "").split("watch?v=")[-1].split("&")[0]
         if not vid:
             continue
-        title = e.get("title") or "Fără titlu"
+        title = e.get("title") or "Untitled"
         url = e.get("url") or f"https://www.youtube.com/watch?v={vid}"
-        # Doar pentru ID-uri de videoclip (11 caractere); canal/playlist au ID diferit → 404 la i.ytimg.com
+        # Only for 11-char video IDs; channel/playlist IDs differ → 404 on i.ytimg.com
         is_video_id = len(vid) == 11 and not vid.startswith("UC")
         thumb = e.get("thumbnail")
         if not thumb and is_video_id:
@@ -542,7 +542,7 @@ def search_youtube(query: str, max_results: int = 10) -> list[dict]:
 
 
 def _best_progressive_url_from_formats(formats: list | tuple) -> str | None:
-    """Alege un singur URL (video+audio în același flux), preferând mp4 / înălțimi rezonabile."""
+    """Pick a single progressive URL (video+audio), preferring mp4 / reasonable height."""
     best: tuple[int, str] | None = None  # (height, url)
     for f in formats or []:
         if not isinstance(f, dict):
@@ -565,8 +565,8 @@ def _best_progressive_url_from_formats(formats: list | tuple) -> str | None:
 
 def extract_single_http_stream_url(page_url: str) -> str | None:
     """
-    Un singur URL HTTPS redabil direct (ex. progressive YouTube), sau None dacă
-    e nevoie doar de DASH separat / extragerea a eșuat.
+    A single direct HTTPS URL (e.g. progressive YouTube), or None if only separate DASH
+    or extraction failed.
     """
     url = youtube_url_for_single_video_download(page_url)
     if not url:
@@ -610,7 +610,7 @@ def extract_single_http_stream_url(page_url: str) -> str | None:
 
 
 def extract_split_video_audio_stream_urls(page_url: str) -> tuple[str, str] | None:
-    """Pentru DASH: (video_url, audio_url). None dacă nu se obțin două fluxuri."""
+    """For DASH: (video_url, audio_url). None if two streams are not available."""
     url = youtube_url_for_single_video_download(page_url)
     if not url:
         return None

@@ -1,4 +1,4 @@
-# Rulare / build Flet (fără TUI Textual). Din rădăcina repo: pip install -r flet_app/requirements.txt
+# Flet run/build (no Textual TUI). From repo root: pip install -r flet_app/requirements.txt
 flet>=0.84.0
 flet-cli>=0.84.0
 mutagen>=1.47.0

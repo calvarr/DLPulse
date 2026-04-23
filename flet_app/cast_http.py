@@ -252,7 +252,7 @@ def serve_stream(rel_path: str):
 
 
 def _allowed_remote_page_url(u: str) -> bool:
-    """Limitează ``/remote_stream`` la URL-uri de pagină (YouTube etc.), nu proxy arbitrar."""
+    """Restrict ``/remote_stream`` to page URLs (YouTube, etc.), not an open proxy."""
     try:
         p = urlparse((u or "").strip())
     except Exception:
@@ -270,9 +270,9 @@ def _allowed_remote_page_url(u: str) -> bool:
 @app.route("/remote_stream")
 def remote_stream():
     """
-    Redare fără descărcare în player: extrage fluxul cu yt-dlp.
-    - Un singur URL progresiv / direct → redirect 302.
-    - DASH (video + audio): dacă există ``ffmpeg``, mux Matroska spre player; altfel redirect doar la video.
+    Stream in the player without downloading: resolve media via yt-dlp.
+    - Single progressive / direct URL → HTTP 302 redirect.
+    - DASH (video + audio): if ``ffmpeg`` is available, mux Matroska to the player; else redirect video only.
     """
     page = (request.args.get("u") or "").strip()
     if not page or not _allowed_remote_page_url(page):
@@ -337,7 +337,7 @@ _server_instance = None  # werkzeug BaseWSGIServer, for shutdown
 
 
 def is_cast_server_running() -> bool:
-    """True dacă serverul HTTP este activ și ascultă pe un port."""
+    """True if the HTTP server is running and bound to a port."""
     return (
         _server_thread is not None
         and _server_thread.is_alive()
@@ -347,16 +347,15 @@ def is_cast_server_running() -> bool:
 
 
 def get_cast_server_port() -> int:
-    """Portul efectiv al serverului Flask (0 dacă nu rulează)."""
+    """Bound Flask server port (0 if not running)."""
     return int(_server_port or 0)
 
 
 def start_cast_server(host: str = "0.0.0.0", port: int = 0) -> int:
-    """Start Flask pe un port liber (0 = ales de OS). Returnează portul efectiv.
+    """Start Flask on a free port (0 = OS-assigned). Returns the actual port.
 
-    Portul este legat *atomic* de werkzeug (fără fereastra TOCTOU), iar erorile
-    din thread sunt propagate înapoi prin Queue. Nu returnează până serverul nu
-    ascultă efectiv.
+    Binding is atomic via werkzeug (no TOCTOU window); errors from the worker thread
+    are propagated through a Queue. Does not return until the server is listening.
     """
     global _server_thread, _server_port, _server_instance
     if is_cast_server_running():
@@ -371,14 +370,14 @@ def start_cast_server(host: str = "0.0.0.0", port: int = 0) -> int:
     def run() -> None:
         global _server_instance, _server_port
         try:
-            # port=0 → OS alege și leagă atomic (fără race condition).
+            # port=0 → OS picks and binds atomically (no race).
             srv = make_server(host, port, app, threaded=True)
             actual_port = srv.server_address[1]
             _server_instance = srv
-            startup_q.put(actual_port)   # succes
+            startup_q.put(actual_port)   # success
             srv.serve_forever()
         except Exception as ex:
-            startup_q.put(ex)            # eroare → propagăm la caller
+            startup_q.put(ex)            # error → propagate to caller
 
     _server_thread = threading.Thread(target=run, daemon=True, name="cast-http")
     _server_thread.start()
@@ -389,13 +388,13 @@ def start_cast_server(host: str = "0.0.0.0", port: int = 0) -> int:
         _server_thread = None
         _server_instance = None
         _server_port = 0
-        raise RuntimeError("Cast HTTP server nu a pornit în 8 s (timeout).")
+        raise RuntimeError("Cast HTTP server did not start within 8 s (timeout).")
 
     if isinstance(result, Exception):
         _server_thread = None
         _server_instance = None
         _server_port = 0
-        raise RuntimeError(f"Cast HTTP server — eroare la pornire: {result}") from result
+        raise RuntimeError(f"Cast HTTP server failed to start: {result}") from result
 
     _server_port = result
     return _server_port

@@ -1,8 +1,8 @@
 # =============================================================================
-# build_windows.ps1 — Build Flet desktop pentru Windows (PowerShell nativ).
-# Din rădăcina repo-ului (yt/): .\build_windows.ps1 [extra flet args]
+# build_windows.ps1 — Build Flet desktop for Windows (native PowerShell).
+# From repo root (yt/): .\build_windows.ps1 [extra flet args]
 #
-# Verifică Python 3.11+, .venv, importuri; pip install doar dacă e nevoie.
+# Checks Python 3.11+, .venv, imports; pip install only when needed.
 # =============================================================================
 
 param(
@@ -33,10 +33,10 @@ function Get-ReqDigest {
 
 $py = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
-if (-not $py) { Err "Nu găsesc python sau py pe PATH (instalează Python 3.11+ de la python.org)."; exit 1 }
+if (-not $py) { Err "python or py not found on PATH (install Python 3.11+ from python.org)."; exit 1 }
 
 $verOk = & $py -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" 2>$null
-if ($LASTEXITCODE -ne 0) { Err "Necesită Python 3.11 sau mai nou. Găsit: $(& $py -c 'import sys; print(sys.version)' 2>$null)"; exit 1 }
+if ($LASTEXITCODE -ne 0) { Err "Python 3.11 or newer required. Found: $(& $py -c 'import sys; print(sys.version)' 2>$null)"; exit 1 }
 Info "Python: $py"
 
 $Venv = "$Root\.venv"
@@ -46,7 +46,7 @@ $FletExe = "$Venv\Scripts\flet.exe"
 $Stamp = "$Venv\.yt_build_deps_stamp"
 
 if (-not (Test-Path $VenvPy)) {
-    Info "Creez .venv …"
+    Info "Creating .venv …"
     & $py -m venv $Venv
 }
 
@@ -58,23 +58,23 @@ if ((Test-Path $Stamp) -and ((Get-Content $Stamp -Raw -ErrorAction SilentlyConti
 }
 
 if ($needInstall) {
-    Info "Instalez sau actualizez dependențe în .venv …"
+    Info "Installing or updating dependencies in .venv …"
     foreach ($req in @("flet_app\requirements.txt", "desktop_tui\requirements.txt", "requirements.txt")) {
         $p = Join-Path $Root $req
         if (Test-Path $p) { & $VenvPip install --quiet -r $p }
     }
     [System.IO.File]::WriteAllText($Stamp, $digest)
 } else {
-    Info "Dependențe deja OK (stamp + importuri) — sar peste pip install."
+    Info "Dependencies already OK (stamp + imports) — skipping pip install."
 }
 
-if (-not (Test-Path $FletExe)) { Err "flet lipsește în .venv după instalare."; exit 1 }
+if (-not (Test-Path $FletExe)) { Err "flet missing in .venv after install."; exit 1 }
 
 $bridgeCode = "import runpy`nrunpy.run_module('flet_app.main', run_name='__main__')`n"
 Set-Content -Path "$Root\main.py" -Value $bridgeCode -Encoding UTF8
 
-Info "Pornesc: flet build windows …"
-# --no-rich-output: evită UnicodeEncodeError (cp1252) la Rich Live pe consolă Windows.
+Info "Running: flet build windows …"
+# --no-rich-output: avoids UnicodeEncodeError (cp1252) from Rich Live on Windows console.
 $fletArgs = @("build", "windows", "--module-name", "main", "--yes", "--no-rich-output")
 if ($ExtraArgs) { $fletArgs += $ExtraArgs }
 
@@ -89,7 +89,7 @@ if ($fletCode -ne 0) {
     if (Test-Path $cmakeInstall) {
         $content = Get-Content $cmakeInstall -Raw
         if ($content -match "vcruntime140_1\.dll") {
-            Warn "Patch CMake pentru vcruntime140_1.dll …"
+            Warn "Patching CMake for vcruntime140_1.dll …"
             $content = $content -replace '(?i)C:/Windows/System32/vcruntime140_1\.dll', 'C:/Program Files/Python313/vcruntime140_1.dll'
             Set-Content -Path $cmakeInstall -Value $content -Encoding UTF8
 
@@ -97,11 +97,11 @@ if ($fletCode -ne 0) {
             if (Test-Path $cmakeExe) {
                 Push-Location "$Root\build\flutter\build\windows\x64"
                 & $cmakeExe -DBUILD_TYPE=Release -P cmake_install.cmake
-                if ($LASTEXITCODE -eq 0) { $fletCode = 0; Info "Asamblat cu succes după patch." }
+                if ($LASTEXITCODE -eq 0) { $fletCode = 0; Info "Assembled successfully after patch." }
                 Pop-Location
             }
         }
     }
 }
-if ($fletCode -ne 0) { Err "flet build a eșuat (cod $fletCode)."; exit $fletCode }
-Info "Gata → $Root\build\windows\"
+if ($fletCode -ne 0) { Err "flet build failed (exit code $fletCode)."; exit $fletCode }
+Info "Done → $Root\build\windows\"

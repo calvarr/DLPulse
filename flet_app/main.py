@@ -41,8 +41,8 @@ _apply_linux_gl_env()
 
 import flet as ft
 
-# Când intrarea e modulul ``flet_app.main`` (ex. ``flet build``), asigură același
-# ``sys.path`` ca la rularea ``python main.py`` din acest folder.
+# When the entrypoint is ``flet_app.main`` (e.g. ``flet build``), keep the same
+# ``sys.path`` as when running ``python main.py`` from this directory.
 _APP_DIR = Path(__file__).resolve().parent
 if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
@@ -279,9 +279,9 @@ def play_media_files(paths: list[Path]) -> None:
 
 def _resolve_external_player_argv_for_stream() -> list[str] | None:
     """
-    Player pentru fluxuri (Search & Download): întâi comanda din Settings,
-    apoi mpv / VLC din PATH (sau căi uzuale pe Windows/macOS).
-    Nu folosește browserul implicit (xdg-open / startfile pe URL YouTube).
+    External player for streams (Search & Download): use the Settings command first,
+    then mpv / VLC on PATH (or common install paths on Windows/macOS).
+    Does not use the default browser (xdg-open / startfile on raw YouTube URLs).
     """
     cmd = (get_video_player_command() or "").strip()
     if cmd:
@@ -309,9 +309,9 @@ def _resolve_external_player_argv_for_stream() -> list[str] | None:
 
 def play_stream_urls(urls: list[str]) -> None:
     """
-    Redă URL-uri de pagină (YouTube etc.) fără descărcare, prin relay-ul local
-    ``http://127.0.0.1:<port>/remote_stream?u=…`` (redirect sau mux ffmpeg),
-    ca în player să intre un flux media, nu deschiderea browserului pe youtube.com.
+    Play page URLs (YouTube, etc.) without downloading, via the local relay
+    ``http://127.0.0.1:<port>/remote_stream?u=…`` (HTTP redirect or ffmpeg mux),
+    so the player receives a media stream instead of opening youtube.com in a browser.
     """
     clean: list[str] = []
     for u in urls:
@@ -407,9 +407,9 @@ def main(page: ft.Page) -> None:
     st.cast_shuffle: bool = False
     st.active_result_kind: str = "none"
     st.main_tabs: ft.Tabs | None = None
-    # Search & Download: folder temporar (None = folosește mereu setarea din Settings).
+    # Search & Download: optional session folder (None = always use Settings path).
     st.search_session_dir: Path | None = None
-    # Library tab: folder ales doar pentru listă (Browse); destinația de download rămâne din Settings.
+    # Library tab: browse-only folder for the list; download destination stays in Settings.
     st.library_view_dir: Path | None = None
     st.ytdlp_update_available = False
     st.ytdlp_pypi_latest: str | None = None
@@ -449,8 +449,8 @@ def main(page: ft.Page) -> None:
 
     @asynccontextmanager
     async def async_busy(detail: str, *, min_display_s: float | None = None):
-        """Afișează spinner + mesaj. Dacă ``min_display_s`` e setat, spinnerul rămâne vizibil
-        cel puțin atâtea secunde (util când ``Popen`` la player se întoarce instant)."""
+        """Show spinner + caption. If ``min_display_s`` is set, keep the spinner visible
+        for at least that many seconds (useful when the player ``Popen`` returns immediately)."""
         loop = asyncio.get_running_loop()
         t0 = loop.time()
         set_busy(True, detail)
@@ -471,7 +471,7 @@ def main(page: ft.Page) -> None:
         status.value = msg
 
     async def play_search_results_async(urls: list[str]) -> None:
-        """Redă URL-uri din tab-ul Search & Download (unul sau mai multe) în playerul extern."""
+        """Play one or more URLs from Search & Download in the external player."""
         cleaned = [u.strip() for u in urls if (u or "").strip()]
         if not cleaned:
             set_status("No URL to play.")
@@ -489,7 +489,7 @@ def main(page: ft.Page) -> None:
         page.update()
 
     async def pick_folder_dialog(initial: str | None) -> str | None:
-        """Alege folderul prin browser integrat (fără dialoguri OS)."""
+        """Pick a folder using the in-app browser (no native OS dialogs)."""
         start = initial if initial and os.path.isdir(initial) else str(Path.home())
         return await show_folder_browser_dialog(
             page,
@@ -1365,7 +1365,7 @@ def main(page: ft.Page) -> None:
     )
 
     def update_cast_stream_urls() -> None:
-        # După stop_cast_server() (ex. idle HTTP), st.cast_port poate rămâne vechi.
+        # After stop_cast_server() (e.g. HTTP idle), st.cast_port may be stale.
         if st.cast_port > 0 and not is_cast_server_running():
             st.cast_port = 0
         if st.cast_port <= 0:
@@ -1409,8 +1409,8 @@ def main(page: ft.Page) -> None:
         return last
 
     async def ensure_cast_http() -> None:
-        # Verificăm atât st.cast_port cât și starea reală a serverului.
-        # Idle timer-ul poate opri serverul fără să reseteze st.cast_port.
+        # Check both st.cast_port and the real server state.
+        # The idle timer may stop the server without resetting st.cast_port.
         if st.cast_port > 0 and is_cast_server_running():
             update_cast_stream_urls()
             return
@@ -1927,7 +1927,7 @@ def main(page: ft.Page) -> None:
     )
 
     async def on_check_ytdlp_updates(_: ft.ControlEvent) -> None:
-        """Verificare manuală pe PyPI (nu depinde de intervalul la pornire)."""
+        """Manual PyPI check (not tied to the launch-interval cadence)."""
         btn_check_ytdlp_updates.disabled = True
         page.update()
         try:
@@ -2421,12 +2421,12 @@ def main(page: ft.Page) -> None:
                 startup_splash_ring,
                 ft.Container(height=16),
                 ft.Text(
-                    "Se încarcă…",
+                    "Loading…",
                     size=14,
                     color=ft.Colors.GREY_400,
                 ),
                 ft.Text(
-                    "Pregătire bibliotecă și setări",
+                    "Preparing library and settings",
                     size=12,
                     color=ft.Colors.GREY_600,
                 ),
@@ -2476,7 +2476,7 @@ def main(page: ft.Page) -> None:
     )
 
     async def _initial_load_task() -> None:
-        """Primul frame arată splash-ul; apoi scanăm biblioteca / etichete și ascundem overlay-ul."""
+        """First frame shows the splash; then refresh library/settings and hide the overlay."""
         await asyncio.sleep(0.06)
         try:
             refresh_library()

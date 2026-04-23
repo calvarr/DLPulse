@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build_macos.sh — Build Flet desktop pentru macOS (rulează DOAR pe Mac).
-# Din rădăcina repo-ului (yt/): ./build_macos.sh [extra flet args]
+# build_macos.sh — Build Flet desktop for macOS (must run on a Mac).
+# From repo root (yt/): ./build_macos.sh [extra flet args]
 #
-# Verifică Python 3.11+, .venv, importuri; pip install doar dacă e nevoie.
+# Checks Python 3.11+, .venv, imports; pip install only when needed.
 # =============================================================================
 
 set -euo pipefail
@@ -17,7 +17,7 @@ warn()  { echo -e "${YELLOW}[warn]${NC} $*"; }
 error() { echo -e "${RED}[error]${NC} $*" >&2; }
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-    error "Build macOS trebuie rulat pe un Mac (Darwin)."
+    error "macOS build must run on a Mac (Darwin)."
     exit 1
 fi
 
@@ -29,18 +29,18 @@ for py in python3.12 python3.11 python3; do
     fi
 done
 if [[ -z "$PYTHON" ]]; then
-    error "Python 3.11+ nu e pe PATH (python.org sau Homebrew: brew install python@3.12)."
+    error "Python 3.11+ not on PATH (python.org or Homebrew: brew install python@3.12)."
     exit 1
 fi
 if ! "$PYTHON" -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"; then
-    error "Necesită Python 3.11 sau mai nou."
+    error "Python 3.11 or newer required."
     exit 1
 fi
 info "Python: $PYTHON"
 
 VENV="$ROOT/.venv"
 if [[ ! -f "$VENV/bin/python" ]]; then
-    info "Creez .venv …"
+    info "Creating .venv …"
     "$PYTHON" -m venv "$VENV"
 fi
 VENV_PY="$VENV/bin/python"
@@ -72,7 +72,7 @@ if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP" 2>/dev/null | head -1)" == "$DIGEST" 
 fi
 
 if [[ "$NEED_INSTALL" -eq 1 ]]; then
-    info "Instalez sau actualizez dependențe în .venv …"
+    info "Installing or updating dependencies in .venv …"
     "$VENV_PIP" install --quiet -r "$ROOT/flet_app/requirements.txt"
     "$VENV_PIP" install --quiet -r "$ROOT/desktop_tui/requirements.txt"
     if [[ -f "$ROOT/requirements.txt" ]]; then
@@ -80,20 +80,20 @@ if [[ "$NEED_INSTALL" -eq 1 ]]; then
     fi
     printf '%s\n' "$DIGEST" > "$STAMP"
 else
-    info "Dependențe deja OK — sar peste pip install."
+    info "Dependencies already OK — skipping pip install."
 fi
 
 if [[ ! -x "$FLET" ]]; then
-    error "flet lipsește în .venv."
+    error "flet missing in .venv."
     exit 1
 fi
 
 if [[ ! -f "$ROOT/pyproject.toml" ]]; then
-    error "pyproject.toml lipsește."
+    error "pyproject.toml missing."
     exit 1
 fi
 
 info "flet build macos …"
 "$FLET" build macos --yes "$@"
 
-info "Gata → $ROOT/build/macos/"
+info "Done → $ROOT/build/macos/"

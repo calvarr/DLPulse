@@ -1,4 +1,4 @@
-# CLI + TUI Textual (în plus față de flet_app). Din rădăcina repo:
+# CLI + Textual TUI (in addition to flet_app). From repo root:
 #   pip install -r flet_app/requirements.txt
 #   pip install -r desktop_tui/requirements.txt
 textual>=0.47.0

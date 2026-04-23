@@ -1,15 +1,15 @@
 # DLPulse — Flet GUI
 
-**GUI Flet:** cod în `flet_app/` (`main.py`, `yt_core.py`, `cast_http.py`, …). Pornești din rădăcina repo `yt/`:
+**Flet GUI:** code lives in `flet_app/` (`main.py`, `yt_core.py`, `cast_http.py`, …). Run from repo root `yt/`:
 
 ```bash
 pip install -r flet_app/requirements.txt
 ./flet_app/run.sh
 ```
 
-**Build:** din `yt/` rulezi `build_linux.sh`, `build_macos.sh` (pe Mac) sau `build_windows.ps1` (PowerShell).
+**Build:** from `yt/` run `build_linux.sh`, `build_macos.sh` (on Mac), or `build_windows.ps1` (PowerShell).
 
-CLI / TUI Textual rămân în `desktop_tui/` și folosesc aceleași module din `flet_app/` (fără duplicate `cast_*`).
+CLI / Textual TUI live in `desktop_tui/` and import the same modules from `flet_app/` (no duplicate `cast_*`).
 
 **Does not use a browser** for anything.
 
@@ -84,7 +84,7 @@ python desktop_tui/app.py
 | **Library** | Files under `downloads/` (job subfolders like the web app) → rename, delete, open folder |
 | **Chromecast** | Matches **`pure_cli`**: optional **Discovery wait** (seconds), table shows **Host:port** + log lines like `devices`. Optional **name filter** = `cast --name`. **Start casting** = table row *or* name match. **Stop last device** = session memory (no rescan). **Stop casting (selected)** = pick row, like `stop --index`. |
 
-Fișierele implicite sunt sub **`flet_app/downloads/`** (configurabil din setările aplicației Flet); CLI/TUI folosesc același `download_dir` din `flet_app/`.
+Default files were historically under **`flet_app/downloads/`**; the app now defaults to the system **Downloads** folder until you change it in Settings. CLI/TUI use the same `download_dir` module from `flet_app/`.
 
 ## Chromecast
 

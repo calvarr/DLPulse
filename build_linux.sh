@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build_linux.sh — Build Flet desktop pentru Linux (rulează pe Linux).
-# Din rădăcina repo-ului (yt/): ./build_linux.sh [--appimage] [extra flet args]
+# build_linux.sh — Build Flet desktop for Linux (must run on Linux).
+# From repo root (yt/): ./build_linux.sh [--appimage] [extra flet args]
 #
-# Verifică Python 3.11+, .venv, importuri (flet, yt-dlp, …). Instalează pip doar
-# dacă lipsește ceva sau s-au schimbat fișierele requirements (stamp).
+# Checks Python 3.11+, .venv, imports (flet, yt-dlp, …). Runs pip only when
+# something is missing or requirements files changed (stamp).
 # =============================================================================
 
 set -euo pipefail
@@ -18,7 +18,7 @@ warn()  { echo -e "${YELLOW}[warn]${NC} $*"; }
 error() { echo -e "${RED}[error]${NC} $*" >&2; }
 
 if [[ "$(uname -s)" != "Linux" ]]; then
-    error "Acest script trebuie rulat pe Linux."
+    error "This script must be run on Linux."
     exit 1
 fi
 
@@ -40,18 +40,18 @@ for py in python3.12 python3.11 python3; do
     fi
 done
 if [[ -z "$PYTHON" ]]; then
-    error "Python 3.11+ nu e pe PATH. Instalează python3 și încearcă din nou."
+    error "Python 3.11+ not found on PATH. Install python3 and try again."
     exit 1
 fi
 if ! "$PYTHON" -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"; then
-    error "Necesită Python 3.11 sau mai nou (găsit: $("$PYTHON" -c 'import sys; print(sys.version)') )."
+    error "Python 3.11 or newer required (found: $("$PYTHON" -c 'import sys; print(sys.version)') )."
     exit 1
 fi
 info "Python: $PYTHON ($("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"))"
 
 VENV="$ROOT/.venv"
 if [[ ! -f "$VENV/bin/python" ]]; then
-    info "Creez .venv …"
+    info "Creating .venv …"
     "$PYTHON" -m venv "$VENV"
 fi
 VENV_PY="$VENV/bin/python"
@@ -83,7 +83,7 @@ if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP" 2>/dev/null | head -1)" == "$DIGEST" 
 fi
 
 if [[ "$NEED_INSTALL" -eq 1 ]]; then
-    info "Instalez sau actualizez dependențe în .venv …"
+    info "Installing or updating dependencies in .venv …"
     "$VENV_PIP" install --quiet -r "$ROOT/flet_app/requirements.txt"
     "$VENV_PIP" install --quiet -r "$ROOT/desktop_tui/requirements.txt"
     if [[ -f "$ROOT/requirements.txt" ]]; then
@@ -91,21 +91,21 @@ if [[ "$NEED_INSTALL" -eq 1 ]]; then
     fi
     printf '%s\n' "$DIGEST" > "$STAMP"
 else
-    info "Dependențe deja OK (stamp + importuri) — sar peste pip install."
+    info "Dependencies already OK (stamp + imports) — skipping pip install."
 fi
 
 if [[ ! -x "$FLET" ]]; then
-    error "flet lipsește în .venv după instalare."
+    error "flet missing in .venv after install."
     exit 1
 fi
 
 if [[ ! -f "$ROOT/pyproject.toml" ]]; then
-    error "pyproject.toml lipsește."
+    error "pyproject.toml missing."
     exit 1
 fi
 
 if ! command -v ffmpeg &>/dev/null; then
-    warn "ffmpeg nu e pe PATH — unele merge-uri yt-dlp pot eșua."
+    warn "ffmpeg not on PATH — some yt-dlp merges may fail."
 fi
 
 export CFLAGS="${CFLAGS:+$CFLAGS }-Wno-macro-redefined"
@@ -115,20 +115,20 @@ info "flet build linux …"
 "$FLET" build linux --yes "${EXTRA_ARGS[@]}"
 
 BUILD_DIR="$ROOT/build/linux"
-info "Gata → $BUILD_DIR"
+info "Done → $BUILD_DIR"
 
 if [[ "$MAKE_APPIMAGE" == true ]]; then
     if [[ -f "$ROOT/packaging/linux/make_appimage.sh" ]]; then
-        bash "$ROOT/packaging/linux/make_appimage.sh" "$ROOT" || warn "make_appimage.sh a eșuat."
+        bash "$ROOT/packaging/linux/make_appimage.sh" "$ROOT" || warn "make_appimage.sh failed."
     elif ! command -v appimagetool &>/dev/null; then
-        warn "appimagetool nu e pe PATH."
+        warn "appimagetool not on PATH."
     else
         APPDIR="$(find "$BUILD_DIR" -maxdepth 3 -type d -name '*.AppDir' -print -quit 2>/dev/null || true)"
         if [[ -n "$APPDIR" ]]; then
             ARCH=x86_64 appimagetool "$APPDIR" "$ROOT/build/DLPulse-x86_64.AppImage"
             info "AppImage: $ROOT/build/DLPulse-x86_64.AppImage"
         else
-            warn "Nu s-a găsit .AppDir sub $BUILD_DIR"
+            warn "No .AppDir found under $BUILD_DIR"
         fi
     fi
 fi

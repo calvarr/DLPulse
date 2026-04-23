@@ -9,7 +9,7 @@ if str(_FLET_APP) not in sys.path:
 
 from download_dir import *  # noqa: E402, F403
 
-# Rădăcina repo-ului (părintele lui flet_app/) — pentru cod care încă se raportează la proiect.
+# Repo root (parent of flet_app/) — for code that still resolves paths from the project tree.
 PROJECT_ROOT = _FLET_APP.parent
 DOWNLOADS_DIR = get_downloads_dir()
 DEFAULT_DOWNLOADS_DIR = DOWNLOADS_DIR

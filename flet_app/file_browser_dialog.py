@@ -1,4 +1,4 @@
-"""Dialog integrat: navigare, folder nou, redenumire, ștergere — fără picker extern."""
+"""Built-in folder browser: navigate, new folder, rename, delete — no native OS picker."""
 
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ def _safe_name(name: str) -> bool:
 
 def _path_for_navigation(raw: str) -> tuple[Path | None, str | None]:
     """
-    Validează calea pentru Go: director existent și listabil.
-    Nu folosim os.access() — pe Linux poate raporta fals chiar când listdir/scandir reușesc.
+    Validate the path for Go: must be an existing, listable directory.
+    We avoid os.access() — on Linux it can be false even when listdir/scandir work.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -112,8 +112,8 @@ async def show_folder_browser_dialog(
     dismiss_dialog_fn: Callable[[Any], None] | None = None,
 ) -> str | None:
     """
-    pick_mode=True: returnează calea aleasă sau None (Anulează).
-    pick_mode=False: doar explorare; returnează None la închidere.
+    pick_mode=True: return the chosen path or None (Cancel).
+    pick_mode=False: browse only; return None when closed.
     """
     fut: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
 
@@ -376,7 +376,7 @@ async def show_folder_browser_dialog(
         dest = current_dir / name
 
         def _mkdir_new() -> None:
-            # NU folosi mkdir(False): primul argument e mode, iar False devine 0 → d--------- (fără acces).
+            # Do not call mkdir(False): the first arg is mode, and False becomes 0 → d--------- (no access).
             dest.mkdir(mode=0o755, parents=False, exist_ok=False)
 
         try:

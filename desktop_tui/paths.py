@@ -1,4 +1,4 @@
-"""Rădăcina repo + flet_app pe sys.path (module partajate: download_dir, yt_core)."""
+"""Repo root + flet_app on sys.path (shared modules: download_dir, yt_core)."""
 from __future__ import annotations
 
 import sys
