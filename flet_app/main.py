@@ -2397,39 +2397,98 @@ def main(page: ft.Page) -> None:
             await asyncio.sleep(6 * 3600)
             await _apply_github_update_check()
 
-    page.add(
-        ft.Container(
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Text(
-                                "DLPulse",
-                                size=22,
-                                weight=ft.FontWeight.BOLD,
-                                color=ft.Colors.GREY_100,
-                            ),
-                            ft.Column(
-                                [
-                                    status,
-                                    busy_row,
-                                ],
-                                tight=True,
-                                horizontal_alignment=ft.CrossAxisAlignment.END,
-                            ),
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    ),
-                    github_update_banner,
-                    dl_queue,
-                    tabs,
-                ],
-                expand=True,
-            ),
+    startup_splash_ring = ft.ProgressRing(
+        width=52,
+        height=52,
+        stroke_width=4,
+        color=ft.Colors.TEAL_300,
+    )
+    startup_splash = ft.Container(
+        expand=True,
+        bgcolor=ft.Colors.with_opacity(0.94, "#070b12"),
+        alignment=ft.alignment.center,
+        opacity=1,
+        animate_opacity=ft.Animation(380, ft.AnimationCurve.EASE_OUT),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "DLPulse",
+                    size=28,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.TEAL_200,
+                ),
+                ft.Container(height=20),
+                startup_splash_ring,
+                ft.Container(height=16),
+                ft.Text(
+                    "Se încarcă…",
+                    size=14,
+                    color=ft.Colors.GREY_400,
+                ),
+                ft.Text(
+                    "Pregătire bibliotecă și setări",
+                    size=12,
+                    color=ft.Colors.GREY_600,
+                ),
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            tight=True,
+        ),
+    )
+
+    main_body = ft.Container(
+        content=ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Text(
+                            "DLPulse",
+                            size=22,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.GREY_100,
+                        ),
+                        ft.Column(
+                            [
+                                status,
+                                busy_row,
+                            ],
+                            tight=True,
+                            horizontal_alignment=ft.CrossAxisAlignment.END,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                github_update_banner,
+                dl_queue,
+                tabs,
+            ],
             expand=True,
-            gradient=_PAGE_GRADIENT,
+        ),
+        expand=True,
+        gradient=_PAGE_GRADIENT,
+    )
+
+    page.add(
+        ft.Stack(
+            controls=[main_body, startup_splash],
+            expand=True,
         )
     )
+
+    async def _initial_load_task() -> None:
+        """Primul frame arată splash-ul; apoi scanăm biblioteca / etichete și ascundem overlay-ul."""
+        await asyncio.sleep(0.06)
+        try:
+            refresh_library()
+            refresh_search_dl_folder_label()
+            refresh_settings_tab()
+            update_cast_stream_urls()
+        finally:
+            startup_splash.opacity = 0
+            page.update()
+            await asyncio.sleep(0.42)
+            startup_splash.visible = False
+            page.update()
 
     async def _cast_progress_loop() -> None:
         while st.cast_poll_run:
@@ -2470,11 +2529,8 @@ def main(page: ft.Page) -> None:
     page.run_task(_github_check_after_startup_delay)
     page.run_task(_github_update_poll_loop)
 
-    refresh_library()
-    refresh_search_dl_folder_label()
-    refresh_settings_tab()
-    update_cast_stream_urls()
     page.update()
+    page.run_task(_initial_load_task)
 
 
 if __name__ == "__main__":
