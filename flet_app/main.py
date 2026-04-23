@@ -2406,7 +2406,7 @@ def main(page: ft.Page) -> None:
     startup_splash = ft.Container(
         expand=True,
         bgcolor=ft.Colors.with_opacity(0.94, "#070b12"),
-        alignment=ft.alignment.center,
+        alignment=ft.Alignment.CENTER,
         opacity=1,
         animate_opacity=ft.Animation(380, ft.AnimationCurve.EASE_OUT),
         content=ft.Column(
