@@ -257,7 +257,7 @@ async def show_folder_browser_dialog(
                         ),
                         on_click=lambda e: asyncio.create_task(on_main_click(e)),
                         style=ft.ButtonStyle(
-                            padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
                         ),
                         expand=True,
                     ),
@@ -268,7 +268,7 @@ async def show_folder_browser_dialog(
             ),
             bgcolor=bg(),
             border_radius=6,
-            padding=ft.padding.symmetric(horizontal=4, vertical=0),
+            padding=ft.Padding.symmetric(horizontal=4, vertical=0),
         )
 
     def make_drive_tile(d: Path) -> ft.Container:
@@ -294,7 +294,7 @@ async def show_folder_browser_dialog(
                             expand=True,
                         ),
                         on_click=lambda e: asyncio.create_task(open_drive(e)),
-                        style=ft.ButtonStyle(padding=ft.padding.symmetric(horizontal=8, vertical=4)),
+                        style=ft.ButtonStyle(padding=ft.Padding.symmetric(horizontal=8, vertical=4)),
                         expand=True,
                     ),
                 ],
@@ -340,7 +340,7 @@ async def show_folder_browser_dialog(
                                     expand=True,
                                 ),
                                 on_click=lambda e: asyncio.create_task(go_to(parent)),
-                                style=ft.ButtonStyle(padding=ft.padding.symmetric(horizontal=8, vertical=4)),
+                                style=ft.ButtonStyle(padding=ft.Padding.symmetric(horizontal=8, vertical=4)),
                                 expand=True,
                             ),
                         ],

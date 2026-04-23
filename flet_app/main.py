@@ -110,6 +110,9 @@ from github_update import (
     GITHUB_PROJECT_URL,
     GITHUB_RELEASES_URL,
     check_app_github_update,
+    commit_page_url,
+    get_app_package_version,
+    get_local_commit_sha,
 )
 
 _AUDIO_SUFFIXES = frozenset(
@@ -377,6 +380,8 @@ def main(page: ft.Page) -> None:
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#070b12"
     page.padding = 16
+    page.window.min_width = 520
+    page.window.min_height = 400
     page.theme = ft.Theme(
         color_scheme=ft.ColorScheme(
             primary=ft.Colors.TEAL_300,
@@ -1326,7 +1331,7 @@ def main(page: ft.Page) -> None:
     )
     cast_list = ft.ListView(
         spacing=2,
-        padding=ft.padding.symmetric(vertical=4),
+        padding=ft.Padding.symmetric(vertical=4),
         expand=True,
         scroll=ft.ScrollMode.AUTO,
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
@@ -2204,10 +2209,60 @@ def main(page: ft.Page) -> None:
     async def on_open_github_releases_index(_: ft.ControlEvent) -> None:
         await page.launch_url(GITHUB_RELEASES_URL)
 
+    _install_pkg_ver = get_app_package_version()
+    _install_commit_sha = get_local_commit_sha()
+
+    async def on_open_install_commit(_: ft.ControlEvent) -> None:
+        if _install_commit_sha:
+            await page.launch_url(commit_page_url(_install_commit_sha))
+
+    _about_build_lines: list = [
+        ft.Text("This install", weight=ft.FontWeight.W_600, size=14, color=ft.Colors.TEAL_200),
+        ft.Text(
+            f"Package version: {_install_pkg_ver}",
+            size=13,
+            color=ft.Colors.GREY_300,
+            selectable=True,
+        ),
+    ]
+    if _install_commit_sha:
+        _about_build_lines.extend(
+            [
+                ft.Text(
+                    "Built from the following Git commit (same as CI / GitHub Actions for this artifact):",
+                    size=11,
+                    color=ft.Colors.GREY_500,
+                ),
+                ft.Text(
+                    _install_commit_sha,
+                    size=12,
+                    color=ft.Colors.TEAL_100,
+                    selectable=True,
+                    font_family="monospace",
+                ),
+                ft.OutlinedButton(
+                    "Open this commit on GitHub",
+                    icon=ft.Icons.COMMIT,
+                    on_click=on_open_install_commit,
+                ),
+            ]
+        )
+    else:
+        _about_build_lines.append(
+            ft.Text(
+                "Git commit for this install is not recorded (unpackaged run, or build without "
+                "``flet_app/build_commit.txt``). The update banner still compares to GitHub when possible.",
+                size=11,
+                color=ft.Colors.GREY_500,
+            )
+        )
+
     tab_about_app = ft.Container(
         content=ft.Column(
             [
                 ft.Text("About DLPulse", weight=ft.FontWeight.BOLD, size=20, color=ft.Colors.GREY_200),
+                *_about_build_lines,
+                ft.Container(height=8),
                 ft.Text(
                     "DLPulse is a desktop front-end around yt-dlp and a few helpers. "
                     "yt-dlp supports a very large list of sites — not only YouTube.",
@@ -2469,6 +2524,7 @@ def main(page: ft.Page) -> None:
                 dl_queue,
                 tabs,
             ],
+            spacing=10,
             expand=True,
         ),
         expand=True,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,14 +35,37 @@ def _flet_app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def get_app_package_version() -> str:
+    """PEP 621 / wheel version of the ``dlpulse`` distribution (e.g. ``1.0.2``)."""
+    try:
+        return importlib.metadata.version("dlpulse")
+    except importlib.metadata.PackageNotFoundError:
+        return "0.0.0"
+
+
+def commit_page_url(full_sha: str) -> str:
+    """``https://github.com/…/commit/<sha>`` for the tree this install was built from."""
+    t = (full_sha or "").strip().lower()[:40]
+    if len(t) < 7 or any(c not in "0123456789abcdef" for c in t):
+        return GITHUB_PROJECT_URL
+    return f"{GITHUB_PROJECT_URL}/commit/{t}"
+
+
 def get_local_commit_sha() -> str | None:
     """SHA embedded at CI build time, or ``git rev-parse HEAD`` when developing from a clone."""
+    env_raw = (os.environ.get("DLPULSE_BUILD_COMMIT") or "").strip()
+    if env_raw:
+        token = env_raw.split()[0]
+        if len(token) >= 7 and token.lower() not in ("unknown", "none", "null"):
+            if all(c in "0123456789abcdefABCDEF" for c in token[:40]):
+                return token[:40].lower()
+
     marker = _flet_app_dir() / "build_commit.txt"
     if marker.is_file():
         raw = marker.read_text(encoding="utf-8").strip()
         token = raw.split()[0] if raw else ""
         if len(token) >= 7 and token.lower() not in ("unknown", "none", "null"):
-            return token[:40]
+            return token[:40].lower()
 
     base = _flet_app_dir()
     for d in (base.parent, *base.parents):
@@ -55,7 +80,7 @@ def get_local_commit_sha() -> str | None:
                 check=False,
             )
             if r.returncode == 0 and (sha := r.stdout.strip()):
-                return sha[:40]
+                return sha[:40].lower()
         except (OSError, subprocess.SubprocessError):
             continue
     return None
