@@ -238,7 +238,7 @@ async def show_folder_browser_dialog(
             expand=True,
             overflow=ft.TextOverflow.ELLIPSIS,
             max_lines=1,
-            text_align=ft.TextAlign.END,
+            text_align=ft.TextAlign.START,
         )
 
         return ft.Container(
@@ -252,7 +252,7 @@ async def show_folder_browser_dialog(
                     ft.TextButton(
                         content=ft.Row(
                             [name_label],
-                            alignment=ft.MainAxisAlignment.END,
+                            alignment=ft.MainAxisAlignment.START,
                             expand=True,
                         ),
                         on_click=lambda e: asyncio.create_task(on_main_click(e)),
@@ -280,7 +280,7 @@ async def show_folder_browser_dialog(
             expand=True,
             overflow=ft.TextOverflow.ELLIPSIS,
             max_lines=1,
-            text_align=ft.TextAlign.END,
+            text_align=ft.TextAlign.START,
             weight=ft.FontWeight.W_500,
         )
         return ft.Container(
@@ -290,7 +290,7 @@ async def show_folder_browser_dialog(
                     ft.TextButton(
                         content=ft.Row(
                             [drive_label],
-                            alignment=ft.MainAxisAlignment.END,
+                            alignment=ft.MainAxisAlignment.START,
                             expand=True,
                         ),
                         on_click=lambda e: asyncio.create_task(open_drive(e)),
@@ -325,7 +325,7 @@ async def show_folder_browser_dialog(
             up_label = ft.Text(
                 "..",
                 expand=True,
-                text_align=ft.TextAlign.END,
+                text_align=ft.TextAlign.START,
                 weight=ft.FontWeight.W_500,
             )
             list_view.controls.append(
@@ -336,7 +336,7 @@ async def show_folder_browser_dialog(
                             ft.TextButton(
                                 content=ft.Row(
                                     [up_label],
-                                    alignment=ft.MainAxisAlignment.END,
+                                    alignment=ft.MainAxisAlignment.START,
                                     expand=True,
                                 ),
                                 on_click=lambda e: asyncio.create_task(go_to(parent)),
