@@ -1324,7 +1324,13 @@ def main(page: ft.Page) -> None:
         size=11,
         color=ft.Colors.GREY_500,
     )
-    cast_list = ft.ListView(spacing=0, height=180, auto_scroll=True)
+    cast_list = ft.ListView(
+        spacing=2,
+        padding=ft.padding.symmetric(vertical=4),
+        expand=True,
+        scroll=ft.ScrollMode.AUTO,
+        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+    )
     cast_checks: list[ft.Checkbox] = []
 
     def update_cast_pick_hint() -> None:
@@ -1795,10 +1801,11 @@ def main(page: ft.Page) -> None:
                 cast_pick_hint,
                 cast_cb_all,
                 ft.Container(
-                    cast_list,
-                    height=260,
+                    content=cast_list,
+                    height=340,
                     border=ft.Border.all(1, ft.Colors.GREY_700),
                     border_radius=8,
+                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
                 ),
             ],
             spacing=8,
