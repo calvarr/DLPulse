@@ -1,5 +1,5 @@
 """
-Shared download / YouTube logic for DLPulse (CLI, TUI, and Flet app).
+Shared download / site logic for DLPulse (CLI, TUI, and Flet app): YouTube, SoundCloud search, etc.
 """
 import os
 import random
@@ -117,6 +117,43 @@ def youtube_url_for_single_video_download(url: str) -> str:
     return u
 
 
+def _url_is_soundcloud(url: str) -> bool:
+    u = (url or "").strip().lower()
+    return "soundcloud.com" in u
+
+
+def _register_thumbnail_metadata_postprocessors(opts: dict[str, Any]) -> None:
+    """
+    The ``YoutubeDL({...})`` API does not auto-register FFmpegMetadata / EmbedThumbnail from
+    ``addmetadata`` / ``embedthumbnail`` booleans (the CLI adds them via ``postprocessors``).
+    """
+    raw = opts.get("postprocessors")
+    pps: list[dict[str, Any]] = [dict(x) for x in raw] if raw else []
+    keys = {x.get("key") for x in pps}
+    if opts.get("addmetadata") and "FFmpegMetadata" not in keys:
+        pps.append(
+            {
+                "key": "FFmpegMetadata",
+                "add_chapters": bool(opts.get("addchapters")),
+                "add_metadata": True,
+                "add_infojson": bool(opts.get("embed_infojson")),
+            }
+        )
+        keys.add("FFmpegMetadata")
+    if opts.get("embedthumbnail") and "EmbedThumbnail" not in keys:
+        pps.append(
+            {
+                "key": "EmbedThumbnail",
+                "already_have_thumbnail": bool(opts.get("writethumbnail")),
+            }
+        )
+        if not opts.get("writethumbnail"):
+            opts["writethumbnail"] = True
+        keys.add("EmbedThumbnail")
+    if pps:
+        opts["postprocessors"] = pps
+
+
 # Programmatic fallbacks: try each format in order (avoids "format not available").
 # besteffort = most permissive, accepts whatever is available.
 FORMATS_VIDEO_TO_TRY = [
@@ -132,6 +169,9 @@ FORMATS_VIDEO_TO_TRY = [
 ]
 # YouTube often omits separate audio streams for the web client; include merge-then-extract fallbacks.
 FORMATS_AUDIO_TO_TRY = [
+    "download/bestaudio/best",
+    "bestaudio[format_id=download]/bestaudio/best",
+    "bestaudio[ext=flac]/bestaudio[ext=wav]/bestaudio[ext=alac]/bestaudio/best",
     "bestaudio/best",
     "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "ba/b",
@@ -150,11 +190,21 @@ FORMAT_PRESETS = [
     ("Video 720p", "bestvideo[height<=720]+bestaudio", None),
     ("Video 480p", "bestvideo[height<=480]+bestaudio", None),
     ("Video 360p", "bestvideo[height<=360]+bestaudio", None),
+    (
+        "Audio only — best lossless (SoundCloud original / FLAC / WAV / ALAC, native)",
+        "download/bestaudio[ext=flac]/bestaudio[ext=wav]/bestaudio[ext=alac]/bestaudio/best",
+        None,
+    ),
+    (
+        "Audio only — best native (original codec, no re-encode)",
+        "bestaudio/best",
+        None,
+    ),
     ("Audio only — MP3 320 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}]),
     ("Audio only — MP3 192 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "2"}]),
     ("Audio only — MP3 128 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "5"}]),
     ("Audio only — M4A (AAC)", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}]),
-    ("Audio only — OPUS", "bestaudio/best", None),
+    ("Audio only — OPUS (native WebM/Opus when offered)", "bestaudio/best", None),
 ]
 
 
@@ -235,11 +285,14 @@ def get_format_preset(index: int) -> tuple[str, dict] | None:
     # Video: force mp4 after merge (bestvideo+bestaudio)
     if index <= 4:
         opts_extra["merge_output_format"] = "mp4"
-    # MP4 video (0–4) and MP3 (5–7): embed thumbnail + metadata for playback
-    if index <= 4 or index in (5, 6, 7):
+    # Video (0–4) and MP3 re-encodes (7–9): embed thumbnail + metadata
+    if index <= 4 or index in (7, 8, 9):
         opts_extra["writethumbnail"] = True
         opts_extra["embedthumbnail"] = True
         opts_extra["addmetadata"] = True
+    # Native lossless / native best: prefer higher bitrate when yt-dlp resolves format
+    if index in (5, 6):
+        opts_extra["format_sort"] = ["+br", "+size", "acodec", "ext"]
     return format_spec, opts_extra
 
 
@@ -407,6 +460,11 @@ def run_download(
         base_opts["cookiefile"] = cookiefile
     base_opts.update(_youtube_opts_extra())
     base_opts.update(opts_extra)
+    # SoundCloud: always try to save + embed cover art (API needs explicit postprocessors below).
+    if _url_is_soundcloud(url):
+        base_opts.setdefault("writethumbnail", True)
+        base_opts.setdefault("embedthumbnail", True)
+        base_opts.setdefault("addmetadata", True)
 
     last_err: str | None = None
     for i, fmt in enumerate(formats_to_try):
@@ -449,7 +507,11 @@ def run_download(
                 opts["cookiefile"] = cookiefile
             pp = base_opts.get("postprocessors")
             if pp:
-                opts["postprocessors"] = pp
+                opts["postprocessors"] = [dict(x) for x in pp]
+            for k in ("writethumbnail", "embedthumbnail", "addmetadata", "addchapters", "embed_infojson"):
+                if k in base_opts:
+                    opts[k] = base_opts[k]
+        _register_thumbnail_metadata_postprocessors(opts)
         attach_hooks(opts)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -539,6 +601,74 @@ def search_youtube(query: str, max_results: int = 10) -> list[dict]:
             thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
         result.append({"id": vid, "title": title, "url": url, "thumbnail": thumb or ""})
     return result
+
+
+def _thumb_from_flat_entry(e: dict) -> str:
+    t = (e.get("thumbnail") or "").strip()
+    if t:
+        return t
+    thumbs = e.get("thumbnails") or []
+    if isinstance(thumbs, list) and thumbs:
+        last = thumbs[-1]
+        if isinstance(last, dict):
+            u = (last.get("url") or "").strip()
+            if u:
+                return u
+    return ""
+
+
+def search_soundcloud(query: str, max_results: int = 10) -> list[dict]:
+    """Search SoundCloud (``scsearch``) and return [{id, title, url, thumbnail}, ...]."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    search_url = f"scsearch{max_results}:{q}"
+    info = extract_url_info(search_url, extract_flat=True)
+    if not info or info.get("_type") != "playlist":
+        return []
+    entries = info.get("entries") or []
+    if not isinstance(entries, list):
+        entries = list(entries)
+    result: list[dict] = []
+    for e in entries:
+        if not e:
+            continue
+        tid = str(e.get("id") or "").strip()
+        title = (e.get("title") or "").strip() or "Untitled"
+        page_url = (e.get("webpage_url") or e.get("url") or "").strip()
+        if not page_url:
+            continue
+        thumb = _thumb_from_flat_entry(e)
+        result.append({"id": tid or page_url, "title": title, "url": page_url, "thumbnail": thumb})
+    return result
+
+
+def search_keywords_multi(
+    query: str,
+    *,
+    youtube: bool = True,
+    soundcloud: bool = False,
+    max_per_source: int = 12,
+) -> tuple[list[dict], frozenset[str]]:
+    """
+    Keyword search on one or more sites. Each hit may include ``source`` (``youtube`` | ``soundcloud``).
+
+    Returns ``(hits, sources_used)`` where ``sources_used`` lists which engines ran (for UI labels).
+    """
+    q = (query or "").strip()
+    if not q:
+        return [], frozenset()
+    used: list[str] = []
+    out: list[dict] = []
+    if youtube:
+        for h in search_youtube(q, max_per_source):
+            out.append({**h, "source": "youtube"})
+        used.append("youtube")
+    if soundcloud:
+        for h in search_soundcloud(q, max_per_source):
+            out.append({**h, "source": "soundcloud"})
+        used.append("soundcloud")
+    return out, frozenset(used)
 
 
 def _best_progressive_url_from_formats(formats: list | tuple) -> str | None:

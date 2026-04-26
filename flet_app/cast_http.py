@@ -252,7 +252,7 @@ def serve_stream(rel_path: str):
 
 
 def _allowed_remote_page_url(u: str) -> bool:
-    """Restrict ``/remote_stream`` to page URLs (YouTube, etc.), not an open proxy."""
+    """Restrict ``/remote_stream`` to known media page hosts — not an open proxy."""
     try:
         p = urlparse((u or "").strip())
     except Exception:
@@ -264,7 +264,14 @@ def _allowed_remote_page_url(u: str) -> bool:
         return True
     if host in ("music.youtube.com", "www.youtube.com", "m.youtube.com", "youtube.com"):
         return True
-    return host.endswith(".youtube.com")
+    if host.endswith(".youtube.com"):
+        return True
+    # SoundCloud (search results use https://soundcloud.com/… track pages)
+    if host in ("soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"):
+        return True
+    if host.endswith(".soundcloud.com"):
+        return True
+    return False
 
 
 @app.route("/remote_stream")

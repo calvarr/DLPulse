@@ -59,7 +59,7 @@ from yt_core import (
     get_format_preset,
     normalize_youtube_radio_mix_url,
     run_download,
-    search_youtube,
+    search_keywords_multi,
     youtube_url_for_single_video_download,
 )
 from cast_http import (
@@ -282,14 +282,20 @@ def play_media_files(paths: list[Path]) -> None:
 
 def _resolve_external_player_argv_for_stream() -> list[str] | None:
     """
-    External player for streams (Search & Download): use the Settings command first,
-    then mpv / VLC on PATH (or common install paths on Windows/macOS).
-    Does not use the default browser (xdg-open / startfile on raw YouTube URLs).
+    External player for streams (Search & Download): **Video** player command first,
+    then **Audio** (SoundCloud / music are often audio-only), then mpv / VLC on PATH
+    (or common install paths on Windows/macOS).
+    Does not use the default browser (xdg-open / startfile on raw page URLs).
     """
-    cmd = (get_video_player_command() or "").strip()
-    if cmd:
+    seen: set[str] = set()
+    for raw in (get_video_player_command(), get_audio_player_command()):
+        cmd = (raw or "").strip()
+        if not cmd or cmd in seen:
+            continue
+        seen.add(cmd)
         argv = shlex.split(cmd, posix=os.name != "nt")
-        return argv if argv else None
+        if argv:
+            return argv
     exe = shutil.which("mpv")
     if exe:
         return [exe]
@@ -310,11 +316,27 @@ def _resolve_external_player_argv_for_stream() -> list[str] | None:
     return None
 
 
+def _inject_mpv_stream_gui_flags(argv: list[str]) -> list[str]:
+    """
+    mpv hides its window for audio-only streams by default — no OSC, feels “stuck”.
+    Add ``--force-window=immediate`` unless the user already set window / no-video options.
+    """
+    if not argv:
+        return argv
+    name = Path(argv[0]).name.lower()
+    if name not in ("mpv", "mpv.exe"):
+        return argv
+    joined = " ".join(argv).lower()
+    if "force-window" in joined or "--no-video" in joined or "-novideo" in joined:
+        return argv
+    return [argv[0], "--force-window=immediate", *argv[1:]]
+
+
 def play_stream_urls(urls: list[str]) -> None:
     """
-    Play page URLs (YouTube, etc.) without downloading, via the local relay
+    Play page URLs (YouTube, SoundCloud, …) without downloading, via the local relay
     ``http://127.0.0.1:<port>/remote_stream?u=…`` (HTTP redirect or ffmpeg mux),
-    so the player receives a media stream instead of opening youtube.com in a browser.
+    so the player receives a media stream instead of opening the site in a browser.
     """
     clean: list[str] = []
     for u in urls:
@@ -328,8 +350,9 @@ def play_stream_urls(urls: list[str]) -> None:
     argv = _resolve_external_player_argv_for_stream()
     if not argv:
         raise ValueError(
-            "No video player found. Install mpv or VLC, or set “Video player command” in Settings."
+            "No player found. Install mpv or VLC, or set “Video player command” / “Audio player command” in Settings."
         )
+    argv = _inject_mpv_stream_gui_flags(argv)
 
     if not is_cast_server_running():
         start_cast_server(port=0)
@@ -341,7 +364,10 @@ def play_stream_urls(urls: list[str]) -> None:
         f"http://127.0.0.1:{port}/remote_stream?u={quote(u, safe='')}"
         for u in clean
     ]
-    subprocess.Popen([*argv, *relay])
+    popen_kw: dict = {"stdin": subprocess.DEVNULL}
+    if os.name != "nt":
+        popen_kw["start_new_session"] = True
+    subprocess.Popen([*argv, *relay], **popen_kw)
 
 
 def _format_duration_hms(seconds: float) -> str:
@@ -411,6 +437,8 @@ def main(page: ft.Page) -> None:
     st.cast_repeat_idx: int = 0
     st.cast_shuffle: bool = False
     st.active_result_kind: str = "none"
+    # Which sites were queried for the last keyword search (for result row labels).
+    st.last_search_sources: frozenset[str] = frozenset()
     st.main_tabs: ft.Tabs | None = None
     # Search & Download: optional session folder (None = always use Settings path).
     st.search_session_dir: Path | None = None
@@ -542,10 +570,26 @@ def main(page: ft.Page) -> None:
             result_checks.append(cb)
             thumb = _thumbnail_from_yt_entry(item)
             u = (item.get("url") or "").strip()
+            raw_title = (item.get("title") or "").strip()
+            src = (item.get("source") or "").strip().lower()
+            if (
+                st.active_result_kind == "search"
+                and len(st.last_search_sources) > 1
+                and src == "soundcloud"
+            ):
+                title_disp = f"[SC] {raw_title}"[:120]
+            elif (
+                st.active_result_kind == "search"
+                and len(st.last_search_sources) > 1
+                and src == "youtube"
+            ):
+                title_disp = f"[YT] {raw_title}"[:120]
+            else:
+                title_disp = raw_title[:120]
             row_cells: list[ft.Control] = [
                 _thumb_tile(thumb),
                 cb,
-                ft.Text((item.get("title") or "")[:120], size=13, expand=True, color=ft.Colors.GREY_200),
+                ft.Text(title_disp, size=13, expand=True, color=ft.Colors.GREY_200),
             ]
             if u:
 
@@ -580,8 +624,11 @@ def main(page: ft.Page) -> None:
             return True
         return False
 
+    cb_src_youtube = ft.Checkbox(label="YouTube", value=True)
+    cb_src_soundcloud = ft.Checkbox(label="SoundCloud", value=False)
+
     tf_query = ft.TextField(
-        label="Type keywords (YouTube search) or paste a URL (video, playlist, or channel)",
+        label="Keywords (search) or paste a URL (YouTube, SoundCloud, playlist, …)",
         expand=True,
         autofocus=True,
         # Room for the floating label so it is not clipped by the tab bar / divider when the layout is tight.
@@ -589,9 +636,24 @@ def main(page: ft.Page) -> None:
     )
 
     async def _search_keywords(q: str) -> None:
-        async with async_busy("Searching YouTube (network)…"):
-            hits = await asyncio.to_thread(search_youtube, q, 12)
+        want_yt = bool(cb_src_youtube.value)
+        want_sc = bool(cb_src_soundcloud.value)
+        if not want_yt and not want_sc:
+            set_status("Select at least one search source: YouTube and/or SoundCloud.")
+            page.update()
+            return
+        parts = [p for p, ok in (("YouTube", want_yt), ("SoundCloud", want_sc)) if ok]
+        busy_lbl = " + ".join(parts)
+        async with async_busy(f"Searching {busy_lbl} (network)…"):
+            hits, used = await asyncio.to_thread(
+                search_keywords_multi,
+                q,
+                youtube=want_yt,
+                soundcloud=want_sc,
+                max_per_source=12,
+            )
         st.search_hits = hits
+        st.last_search_sources = used
         st.pl_entries = []
         st.active_result_kind = "search"
         rebuild_results()
@@ -622,6 +684,7 @@ def main(page: ft.Page) -> None:
             return
         if entries:
             st.search_hits = []
+            st.last_search_sources = frozenset()
             st.pl_entries = entries
             st.active_result_kind = "playlist"
             rebuild_results()
@@ -639,6 +702,7 @@ def main(page: ft.Page) -> None:
         if not info:
             st.pl_entries = []
             st.search_hits = []
+            st.last_search_sources = frozenset()
             st.active_result_kind = "none"
             rebuild_results()
             clear_busy()
@@ -649,6 +713,7 @@ def main(page: ft.Page) -> None:
         st.search_hits = []
         if ctype in ("playlist", "channel"):
             st.pl_entries = []
+            st.last_search_sources = frozenset()
             st.active_result_kind = "none"
             rebuild_results()
             busy_caption.value = "Loading full playlist (this can take a while)…"
@@ -658,12 +723,14 @@ def main(page: ft.Page) -> None:
                 set_status(err2[:200])
             else:
                 st.pl_entries = entries2
+                st.last_search_sources = frozenset()
                 st.active_result_kind = "playlist"
                 rebuild_results()
                 set_status(f"{len(entries2)} videos loaded — tick rows to play or download.")
         else:
             st.pl_entries = []
             st.search_hits = [_search_hit_from_extract_info(info, canonical)]
+            st.last_search_sources = frozenset()
             st.active_result_kind = "search"
             rebuild_results()
             set_status("")
@@ -1695,6 +1762,15 @@ def main(page: ft.Page) -> None:
                 ),
                 ft.Row(
                     [
+                        ft.Text("Search in:", size=12, color=ft.Colors.GREY_500),
+                        cb_src_youtube,
+                        cb_src_soundcloud,
+                    ],
+                    spacing=14,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    [
                         ft.Text(
                             "Results (same list for keyword search or playlist/channel):",
                             weight=ft.FontWeight.BOLD,
@@ -1897,7 +1973,7 @@ def main(page: ft.Page) -> None:
         label="Video player command",
         value=get_video_player_command(),
         expand=True,
-        hint_text="Empty = OS default · vlc · mpv --force-window",
+        hint_text="Search “Play” stream: this first, then Audio command · mpv gets a window for audio-only",
     )
     tf_cast_disc_wait = ft.TextField(
         label="Chromecast discovery wait (seconds)",
@@ -2303,9 +2379,10 @@ def main(page: ft.Page) -> None:
                 ft.Container(height=8),
                 ft.Text("How to download from other sites", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
                 ft.Text(
-                    "In the Search & Download tab, paste the page URL into the same field you use for keywords or "
-                    "YouTube links, then press “Search / open URL”. The app will try to resolve the page with yt-dlp "
-                    "like any other supported URL (video, playlist, or channel where applicable).",
+                    "In the Search & Download tab, paste a page URL into the same field as keywords, then press "
+                    "“Search / open URL”. For keyword search, tick YouTube and/or SoundCloud under “Search in”, then "
+                    "search — results are merged when both are selected ([YT] / [SC] labels). yt-dlp resolves any "
+                    "supported site (video, playlist, or channel where applicable).",
                     size=12,
                     color=ft.Colors.GREY_400,
                 ),
