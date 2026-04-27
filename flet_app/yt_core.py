@@ -184,6 +184,8 @@ FORMATS_AUDIO_TO_TRY = [
     "worst",
 ]
 
+FORMAT_ARTWORK_ONLY = "__dlpulse_artwork_only__"
+
 FORMAT_PRESETS = [
     ("Video — best quality (video+audio)", "bestvideo+bestaudio", None),
     ("Video 1080p", "bestvideo[height<=1080]+bestaudio", None),
@@ -205,6 +207,11 @@ FORMAT_PRESETS = [
     ("Audio only — MP3 128 kbps", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "5"}]),
     ("Audio only — M4A (AAC)", "bestaudio/best", [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}]),
     ("Audio only — OPUS (native WebM/Opus when offered)", "bestaudio/best", None),
+    (
+        "Artwork only — cover / thumbnail image (no audio)",
+        FORMAT_ARTWORK_ONLY,
+        None,
+    ),
 ]
 
 
@@ -279,6 +286,8 @@ def get_format_preset(index: int) -> tuple[str, dict] | None:
     if index < 0 or index >= len(FORMAT_PRESETS):
         return None
     _, format_spec, postprocessors = FORMAT_PRESETS[index]
+    if format_spec == FORMAT_ARTWORK_ONLY:
+        return FORMAT_ARTWORK_ONLY, {}
     opts_extra: dict[str, Any] = {}
     if postprocessors:
         opts_extra["postprocessors"] = postprocessors
@@ -294,6 +303,47 @@ def get_format_preset(index: int) -> tuple[str, dict] | None:
     if index in (5, 6):
         opts_extra["format_sort"] = ["+br", "+size", "acodec", "ext"]
     return format_spec, opts_extra
+
+
+def download_artwork_files(
+    url: str,
+    output_dir: str,
+    *,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[bool, list[str], str | None]:
+    """Download cover / thumbnail only (no media) — works for SoundCloud, YouTube, etc."""
+    u = (url or "").strip()
+    if not u.startswith("http"):
+        if "soundcloud.com" in u.lower():
+            u = "https://" + u.lstrip("/")
+        else:
+            return False, [], "Use a full https://… URL (or soundcloud.com/…/track) for artwork-only download."
+    out_dir = (output_dir or os.getcwd()).strip()
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    before = set(Path(out_dir).iterdir()) if Path(out_dir).exists() else set()
+    if progress_callback:
+        progress_callback({"message": "Downloading artwork…", "fraction": None})
+    opts: dict[str, Any] = {
+        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "writethumbnail": True,
+        "logger": _YtdlpQuietLogger(),
+    }
+    cookiefile = _cookiefile_path()
+    if cookiefile:
+        opts["cookiefile"] = cookiefile
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([u])
+    except Exception as e:
+        return False, [], str(e).strip() or "Unknown error"
+    after = set(Path(out_dir).iterdir())
+    new_files = [f.name for f in (after - before) if f.is_file()]
+    if not new_files:
+        return False, [], "No image file was written (this URL may not expose a thumbnail)."
+    return True, new_files, None
 
 
 def _is_format_not_available(err: Exception) -> bool:
@@ -430,6 +480,9 @@ def run_download(
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     before = set(Path(out_dir).iterdir()) if Path(out_dir).exists() else set()
 
+    if format_spec == FORMAT_ARTWORK_ONLY:
+        return download_artwork_files(url, output_dir, progress_callback=progress_callback)
+
     url = youtube_url_for_single_video_download(url)
 
     is_video_preset = "merge_output_format" in opts_extra
@@ -552,6 +605,21 @@ def fetch_playlist_entries(
     entries = info.get("entries") or []
     if not isinstance(entries, list):
         entries = list(entries)
+    extractor_key = ((info.get("extractor") or "") + " " + (info.get("ie_key") or "")).lower()
+    if _url_is_soundcloud(url) or "soundcloud" in extractor_key:
+        result_sc: list[dict] = []
+        for e in entries[:max_entries]:
+            if not isinstance(e, dict):
+                continue
+            title = (e.get("title") or "").strip() or "Untitled"
+            page_url = (e.get("webpage_url") or e.get("url") or "").strip()
+            if not page_url:
+                continue
+            tid = str(e.get("id") or "").strip() or page_url
+            thumb = _thumb_from_flat_entry(e)
+            result_sc.append({"id": tid, "title": title, "url": page_url, "thumbnail": thumb})
+        return result_sc, None
+
     result: list[dict] = []
     for e in entries[:max_entries]:
         if not e:
