@@ -440,6 +440,7 @@ def main(page: ft.Page) -> None:
     # Which sites were queried for the last keyword search (for result row labels).
     st.last_search_sources: frozenset[str] = frozenset()
     st.main_tabs: ft.Tabs | None = None
+    st.library_loaded_once: bool = False
     # Search & Download: optional session folder (None = always use Settings path).
     st.search_session_dir: Path | None = None
     # Library tab: browse-only folder for the list; download destination stays in Settings.
@@ -1153,6 +1154,7 @@ def main(page: ft.Page) -> None:
                     )
                 )
         update_lib_sel_hint()
+        st.library_loaded_once = True
 
     async def on_lib_use_save_folder(_: ft.ControlEvent) -> None:
         st.library_view_dir = None
@@ -2414,9 +2416,10 @@ def main(page: ft.Page) -> None:
         except (TypeError, ValueError, AttributeError):
             return
         if idx == 1:
-            async with async_busy("Loading library tab (scanning folders)…"):
-                refresh_library()
-            page.update()
+            if not st.library_loaded_once:
+                async with async_busy("Loading library tab (scanning folders)…"):
+                    refresh_library()
+                page.update()
         elif idx == 2:
             update_cast_stream_urls()
             page.update()

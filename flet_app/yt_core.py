@@ -528,7 +528,13 @@ def run_download(
         base_opts["postprocessors"] = [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}
         ]
-    # SoundCloud: always try to save + embed cover art (API needs explicit postprocessors below).
+    # Audio presets: always try to save/embed artwork + metadata when available.
+    # This ensures cover download for any audio conversion target, not only MP3 presets.
+    if not is_video_preset:
+        base_opts.setdefault("writethumbnail", True)
+        base_opts.setdefault("embedthumbnail", True)
+        base_opts.setdefault("addmetadata", True)
+    # SoundCloud: keep explicit defaults as well.
     if _url_is_soundcloud(url):
         base_opts.setdefault("writethumbnail", True)
         base_opts.setdefault("embedthumbnail", True)
