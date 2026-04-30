@@ -122,6 +122,11 @@ def _url_is_soundcloud(url: str) -> bool:
     return "soundcloud.com" in u
 
 
+def _url_is_youtube(url: str) -> bool:
+    u = (url or "").strip().lower()
+    return "youtube.com" in u or "youtu.be" in u
+
+
 def _register_thumbnail_metadata_postprocessors(opts: dict[str, Any]) -> None:
     """
     The ``YoutubeDL({...})`` API does not auto-register FFmpegMetadata / EmbedThumbnail from
@@ -513,6 +518,16 @@ def run_download(
         base_opts["cookiefile"] = cookiefile
     base_opts.update(_youtube_opts_extra())
     base_opts.update(opts_extra)
+    # YouTube has no true lossless/native audio tracks; for those presets force MP3 extraction
+    # so fallback to progressive "best" doesn't leave users with a video file.
+    if (
+        _url_is_youtube(url)
+        and "format_sort" in opts_extra
+        and not base_opts.get("postprocessors")
+    ):
+        base_opts["postprocessors"] = [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}
+        ]
     # SoundCloud: always try to save + embed cover art (API needs explicit postprocessors below).
     if _url_is_soundcloud(url):
         base_opts.setdefault("writethumbnail", True)
