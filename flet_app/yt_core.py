@@ -389,6 +389,7 @@ def run_download(
     opts_extra: dict,
     output_dir: str,
     no_playlist: bool = False,
+    download_cover: bool = True,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[bool, list[str], str | None]:
     """
@@ -528,17 +529,21 @@ def run_download(
         base_opts["postprocessors"] = [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}
         ]
-    # Audio presets: always try to save/embed artwork + metadata when available.
-    # This ensures cover download for any audio conversion target, not only MP3 presets.
-    if not is_video_preset:
-        base_opts.setdefault("writethumbnail", True)
-        base_opts.setdefault("embedthumbnail", True)
-        base_opts.setdefault("addmetadata", True)
-    # SoundCloud: keep explicit defaults as well.
-    if _url_is_soundcloud(url):
-        base_opts.setdefault("writethumbnail", True)
-        base_opts.setdefault("embedthumbnail", True)
-        base_opts.setdefault("addmetadata", True)
+    if download_cover:
+        # Audio presets: optionally save/embed artwork + metadata when available.
+        # Applies to YouTube and SoundCloud.
+        if not is_video_preset:
+            base_opts.setdefault("writethumbnail", True)
+            base_opts.setdefault("embedthumbnail", True)
+            base_opts.setdefault("addmetadata", True)
+        if _url_is_soundcloud(url):
+            base_opts.setdefault("writethumbnail", True)
+            base_opts.setdefault("embedthumbnail", True)
+            base_opts.setdefault("addmetadata", True)
+    else:
+        # User opted out: do not download/embed thumbnails.
+        base_opts.pop("writethumbnail", None)
+        base_opts.pop("embedthumbnail", None)
 
     last_err: str | None = None
     for i, fmt in enumerate(formats_to_try):

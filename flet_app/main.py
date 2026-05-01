@@ -196,6 +196,23 @@ def _fmt_idx(drop: ft.Dropdown | None) -> int:
         return 0
 
 
+def _preset_requires_ffmpeg_conversion(fmt_i: int) -> bool:
+    """True for presets that need FFmpeg re-encode/extract (e.g. MP3/M4A)."""
+    preset = get_format_preset(fmt_i)
+    if not preset:
+        return False
+    _spec, extra = preset
+    post = extra.get("postprocessors") or []
+    if not isinstance(post, list):
+        return False
+    for item in post:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("key", "")).strip() == "FFmpegExtractAudio":
+            return True
+    return False
+
+
 def dismiss_dialog(dlg: ft.DialogControl) -> None:
     dlg.open = False
     dlg.update()
@@ -537,6 +554,11 @@ def main(page: ft.Page) -> None:
 
     preset_options = [ft.dropdown.Option(key=str(i), text=p[0][:80]) for i, p in enumerate(FORMAT_PRESETS)]
     dd_results_fmt = ft.Dropdown(label="Format preset", options=preset_options, value="0", width=400)
+    cb_download_cover = ft.Checkbox(
+        label="Download cover image (thumbnail)",
+        value=False,
+        tooltip="When enabled, yt-dlp tries to download/embed artwork for YouTube and SoundCloud.",
+    )
 
     col_results = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO)
     result_checks: list[ft.Checkbox] = []
@@ -752,7 +774,9 @@ def main(page: ft.Page) -> None:
     tf_query.on_submit = on_query
     btn_query = ft.Button(content="Search / open URL", icon=ft.Icons.SEARCH, on_click=on_query)
 
-    async def do_download_urls(urls: list[str], fmt_i: int, no_pl: bool) -> None:
+    async def do_download_urls(
+        urls: list[str], fmt_i: int, no_pl: bool, download_cover: bool
+    ) -> None:
         preset = get_format_preset(fmt_i)
         if not preset:
             set_status("Invalid format.")
@@ -835,7 +859,16 @@ def main(page: ft.Page) -> None:
 
                     return progress_cb
 
-                ok, files, err = await asyncio.to_thread(run_download, u, spec, extra, str(out), no_pl, make_cb())
+                ok, files, err = await asyncio.to_thread(
+                    run_download,
+                    u,
+                    spec,
+                    extra,
+                    str(out),
+                    no_pl,
+                    download_cover,
+                    make_cb(),
+                )
                 if ok:
                     bar.value = 1.0
                     pct.value = "100%"
@@ -883,12 +916,19 @@ def main(page: ft.Page) -> None:
             set_status("Search with keywords or open a playlist/channel URL first.")
             page.update()
             return
+        fmt_i = _fmt_idx(dd_results_fmt)
+        if _preset_requires_ffmpeg_conversion(fmt_i) and not shutil.which("ffmpeg"):
+            set_status(
+                "This audio conversion preset needs ffmpeg (MP3/M4A). Install ffmpeg, then try again."
+            )
+            page.update()
+            return
         urls = _selected_result_urls()
         if not urls:
             set_status("Tick one or more rows in the list above.")
             page.update()
             return
-        await do_download_urls(urls, _fmt_idx(dd_results_fmt), True)
+        await do_download_urls(urls, fmt_i, True, bool(cb_download_cover.value))
 
     async def on_play_selected(_: ft.ControlEvent) -> None:
         if st.active_result_kind not in ("search", "playlist"):
@@ -1767,6 +1807,7 @@ def main(page: ft.Page) -> None:
                         ft.Text("Search in:", size=12, color=ft.Colors.GREY_500),
                         cb_src_youtube,
                         cb_src_soundcloud,
+                        cb_download_cover,
                     ],
                     spacing=14,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,

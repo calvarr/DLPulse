@@ -105,7 +105,11 @@ if [[ ! -f "$ROOT/pyproject.toml" ]]; then
 fi
 
 if ! command -v ffmpeg &>/dev/null; then
-    warn "ffmpeg not on PATH — some yt-dlp merges may fail."
+    if [[ "$MAKE_APPIMAGE" == true ]]; then
+        info "ffmpeg not on PATH — packaging/linux/make_appimage.sh will bundle static ffmpeg into the AppImage."
+    else
+        warn "ffmpeg not on PATH — some yt-dlp merges may fail."
+    fi
 fi
 
 export CFLAGS="${CFLAGS:+$CFLAGS }-Wno-macro-redefined"
