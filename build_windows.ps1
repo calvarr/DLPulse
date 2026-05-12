@@ -53,7 +53,7 @@ if (-not (Test-Path $VenvPy)) {
 $digest = Get-ReqDigest
 $needInstall = $true
 if ((Test-Path $Stamp) -and ((Get-Content $Stamp -Raw -ErrorAction SilentlyContinue).Trim() -eq $digest)) {
-    $imp = & $VenvPy -c "import flet, yt_dlp, flask, pychromecast" 2>$null
+    $imp = & $VenvPy -c "import flet, yt_dlp, flask, pychromecast, imageio_ffmpeg, flet_video" 2>$null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $FletExe)) { $needInstall = $false }
 }
 
@@ -81,6 +81,7 @@ if ($ExtraArgs) { $fletArgs += $ExtraArgs }
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $env:FLET_DISPLAY_LEVEL = "info"
+$env:FLET_DESKTOP_FLAVOR = if ($env:FLET_DESKTOP_FLAVOR) { $env:FLET_DESKTOP_FLAVOR } else { "full" }
 $process = Start-Process -FilePath $FletExe -ArgumentList $fletArgs -NoNewWindow -Wait -PassThru
 $fletCode = $process.ExitCode
 

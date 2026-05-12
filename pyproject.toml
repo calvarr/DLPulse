@@ -6,13 +6,15 @@ requires-python = ">=3.11"
 
 # Flet bundle dependencies; optional ``pip install -e ".[tui]"`` for the Textual CLI/TUI.
 dependencies = [
-    "flet>=0.24.0",
+    "flet>=0.85.0",
     "yt-dlp>=2024.1.0",
     "mutagen>=1.47.0",
     "packaging>=23.0",
     "Flask>=3.0.0",
     "pychromecast>=14.0.0",
     "zeroconf>=0.132.0",
+    "imageio-ffmpeg>=0.5.1",
+    "flet-video>=0.85.0",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +30,7 @@ module_name = "flet_app.main"
 icon = "flet_app/icon.png"
 product_name = "DLPulse"
 company = "calvarr"
+desktop_flavor = "full"
 
 [tool.flet.linux]
 # flet build linux outputs a folder; for AppImage use appimagetool (see build_linux.sh)

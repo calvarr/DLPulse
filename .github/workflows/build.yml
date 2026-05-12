@@ -57,7 +57,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             ninja-build pkg-config libgtk-3-dev libglib2.0-dev \
-            libblkid-dev liblzma-dev patchelf cmake clang xz-utils
+            libblkid-dev liblzma-dev patchelf cmake clang xz-utils \
+            libmpv-dev mpv
 
       - uses: subosito/flutter-action@v2
         with:
@@ -75,6 +76,14 @@ jobs:
           pip install -e .
           pip install -r flet_app/requirements.txt
           pip install -r desktop_tui/requirements.txt
+
+      - name: Verify bundled ffmpeg dependency
+        run: |
+          python - <<'PY'
+          import imageio_ffmpeg
+          exe = imageio_ffmpeg.get_ffmpeg_exe()
+          print(f"Bundled ffmpeg from imageio-ffmpeg: {exe}")
+          PY
 
       - name: Ensure app icon (pyproject references flet_app/icon.png)
         run: |
@@ -100,6 +109,7 @@ jobs:
         env:
           CFLAGS: "-Wno-macro-redefined"
           CXXFLAGS: "-Wno-macro-redefined"
+          FLET_DESKTOP_FLAVOR: "full"
         run: flet build linux --yes
 
       - name: Build AppImage (Linux)

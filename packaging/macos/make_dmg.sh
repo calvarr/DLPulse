@@ -12,6 +12,21 @@ if [[ -z "$APP" ]]; then
   exit 1
 fi
 
+BIN_DIR="$APP/Contents/Resources/bin"
+mkdir -p "$BIN_DIR"
+FFMPEG_EXE="$(python - <<'PY'
+import imageio_ffmpeg
+print(imageio_ffmpeg.get_ffmpeg_exe())
+PY
+)"
+if [[ ! -f "$FFMPEG_EXE" ]]; then
+  echo "imageio-ffmpeg did not provide an ffmpeg executable." >&2
+  exit 1
+fi
+cp -f "$FFMPEG_EXE" "$BIN_DIR/ffmpeg"
+chmod +x "$BIN_DIR/ffmpeg"
+echo "Bundled ffmpeg: $BIN_DIR/ffmpeg"
+
 OUT="build/DLPulse.dmg"
 mkdir -p build
 rm -f "$OUT"

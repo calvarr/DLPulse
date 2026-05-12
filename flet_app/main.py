@@ -21,19 +21,28 @@ def _apply_linux_gl_env() -> None:
     def _truthy(name: str) -> bool:
         return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
-    if _truthy("FLET_SW_GL"):
+    if not _truthy("DLPULSE_NO_GDK_GLES"):
+        os.environ.setdefault("GDK_GL", "gles")
+
+    wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or (
+        os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+    )
+    use_wayland_fix = wayland and not _truthy("FLET_NO_WAYLAND_FIX")
+    force_sw_gl = _truthy("FLET_SW_GL")
+
+    if force_sw_gl:
+        os.environ.setdefault("FLET_SW_GL", "1")
         os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
         os.environ.setdefault("GALLIUM_DRIVER", "llvmpipe")
-    elif not _truthy("FLET_NO_WAYLAND_FIX"):
-        wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or (
-            os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
-        )
-        if wayland:
-            os.environ.setdefault("GDK_BACKEND", "x11")
-            os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-            if not os.environ.get("DISPLAY"):
-                os.environ.setdefault("DISPLAY", ":0")
-            os.environ.pop("WAYLAND_DISPLAY", None)
+        os.environ.setdefault("LIBGL_DRI3_DISABLE", "1")
+    if use_wayland_fix:
+        os.environ.setdefault("GDK_BACKEND", "x11")
+        os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+        if not os.environ.get("DISPLAY"):
+            os.environ.setdefault("DISPLAY", ":0")
+        os.environ.pop("WAYLAND_DISPLAY", None)
+    if os.environ.get("DISPLAY"):
+        os.environ.setdefault("EGL_PLATFORM", "x11")
     os.environ.setdefault("MESA_NO_ERROR", "1")
 
 
@@ -50,6 +59,48 @@ if str(_APP_DIR) not in sys.path:
 import paths  # noqa: F401
 
 from file_browser_dialog import show_folder_browser_dialog
+from ffmpeg_tools import apply_bundled_tool_path, ffmpeg_available
+
+apply_bundled_tool_path()
+
+_FLET_VIDEO_IMPORT_ERROR: Exception | None = None
+try:
+    from flet_video import PlaylistMode, Video, VideoConfiguration, VideoMedia
+except Exception as e:
+    _FLET_VIDEO_IMPORT_ERROR = e
+    PlaylistMode = None  # type: ignore[assignment]
+    Video = None  # type: ignore[assignment]
+    VideoConfiguration = None  # type: ignore[assignment]
+    VideoMedia = None  # type: ignore[assignment]
+
+
+def _player_debug(message: str) -> None:
+    print(f"[DLPulse player] {message}", file=sys.stderr, flush=True)
+
+
+if _FLET_VIDEO_IMPORT_ERROR is not None:
+    _player_debug(f"flet-video import failed: {_FLET_VIDEO_IMPORT_ERROR}")
+else:
+    # Log media_kit dependency status so it shows up in player-debug.log.
+    _mpv = shutil.which("mpv")
+    _player_debug(f"flet-video imported OK | mpv on PATH: {_mpv or 'not found'}")
+    try:
+        import ctypes.util as _cu
+        _libmpv = _cu.find_library("mpv")
+        _player_debug(f"libmpv shared library: {_libmpv or 'NOT FOUND — media_kit needs libmpv on Linux'}")
+    except Exception as _e:
+        _player_debug(f"libmpv check error: {_e}")
+    _player_debug(
+        "GL env: "
+        f"DISPLAY={os.environ.get('DISPLAY')!r}, "
+        f"XDG_SESSION_TYPE={os.environ.get('XDG_SESSION_TYPE')!r}, "
+        f"GDK_BACKEND={os.environ.get('GDK_BACKEND')!r}, "
+        f"GDK_GL={os.environ.get('GDK_GL')!r}, "
+        f"EGL_PLATFORM={os.environ.get('EGL_PLATFORM')!r}, "
+        f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')!r}, "
+        f"LIBGL_ALWAYS_SOFTWARE={os.environ.get('LIBGL_ALWAYS_SOFTWARE')!r}, "
+        f"GALLIUM_DRIVER={os.environ.get('GALLIUM_DRIVER')!r}"
+    )
 
 from yt_core import (
     FORMAT_PRESETS,
@@ -67,6 +118,7 @@ from cast_http import (
     guess_mime_for_cast,
     is_cast_server_running,
     media_url,
+    register_media_path,
     start_cast_server,
     stop_cast_server,
     stream_url,
@@ -90,12 +142,14 @@ from paths import (
     get_cast_discovery_wait_s,
     get_downloads_dir,
     get_github_update_dismissed_main_sha,
+    get_playback_mode,
     get_video_player_command,
     mark_ytdlp_pypi_checked,
     set_audio_player_command,
     set_cast_discovery_wait_s,
     set_downloads_dir,
     set_github_update_dismissed_main_sha,
+    set_playback_mode,
     set_video_player_command,
     should_check_ytdlp_pypi,
 )
@@ -242,6 +296,13 @@ def _write_temp_m3u_playlist(paths: list[Path]) -> Path:
     for p in resolved:
         if not p.is_file():
             raise OSError(f"Not found: {p}")
+    return _write_temp_m3u_entries([p.as_uri() for p in resolved])
+
+
+def _write_temp_m3u_entries(entries: list[str]) -> Path:
+    lines = [str(e).strip() for e in entries if str(e or "").strip()]
+    if not lines:
+        raise ValueError("No playlist entries.")
     tmp = tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -253,8 +314,8 @@ def _write_temp_m3u_playlist(paths: list[Path]) -> Path:
     out_path = Path(tmp.name)
     try:
         tmp.write("#EXTM3U\n")
-        for p in resolved:
-            tmp.write(p.as_uri() + "\n")
+        for line in lines:
+            tmp.write(line + "\n")
         tmp.close()
         return out_path
     except Exception:
@@ -381,10 +442,29 @@ def play_stream_urls(urls: list[str]) -> None:
         f"http://127.0.0.1:{port}/remote_stream?u={quote(u, safe='')}"
         for u in clean
     ]
+    target = relay[0] if len(relay) == 1 else str(_write_temp_m3u_entries(relay))
     popen_kw: dict = {"stdin": subprocess.DEVNULL}
     if os.name != "nt":
         popen_kw["start_new_session"] = True
-    subprocess.Popen([*argv, *relay], **popen_kw)
+    subprocess.Popen([*argv, target], **popen_kw)
+
+
+def remote_stream_urls_for_app_player(urls: list[str], host: str = "127.0.0.1") -> list[str]:
+    """Build local relay URLs for the embedded Flet player."""
+    clean: list[str] = []
+    for u in urls:
+        t = (u or "").strip()
+        if t:
+            clean.append(youtube_url_for_single_video_download(t))
+    if not clean:
+        raise ValueError("No URLs to play.")
+
+    if not is_cast_server_running():
+        start_cast_server(port=0)
+    port = get_cast_server_port()
+    if port <= 0:
+        raise RuntimeError("Local stream server did not start.")
+    return [f"http://{host}:{port}/remote_stream?u={quote(u, safe='')}" for u in clean]
 
 
 def _format_duration_hms(seconds: float) -> str:
@@ -445,6 +525,7 @@ def main(page: ft.Page) -> None:
     st.cast_devices: list = []
     st.cast_port: int = 0
     st.file_to_cast: str | None = None
+    st.cast_direct_url: str | None = None
     # Relative paths from last "Prepare for Cast" (one or many) — only for stream URL display.
     st.cast_stream_rels: list[str] | None = None
     st.lib_rows: list[tuple[str, Path]] = []
@@ -453,6 +534,13 @@ def main(page: ft.Page) -> None:
     st.cast_last_play_idxs: list[int] = []
     st.cast_repeat_idx: int = 0
     st.cast_shuffle: bool = False
+    st.player_items: list[dict] = []
+    st.player_index: int = 0
+    st.player_repeat_idx: int = 0
+    st.player_shuffle: bool = False
+    st.player_ready: bool = False
+    st.player_wait_token: int = 0
+    st.player_video = None
     st.active_result_kind: str = "none"
     # Which sites were queried for the last keyword search (for result row labels).
     st.last_search_sources: frozenset[str] = frozenset()
@@ -521,31 +609,93 @@ def main(page: ft.Page) -> None:
     def set_status(msg: str) -> None:
         status.value = msg
 
+    def use_internal_player() -> bool:
+        return get_playback_mode() == "internal"
+
     async def play_search_results_async(urls: list[str]) -> None:
-        """Play one or more URLs from Search & Download in the external player."""
+        """Play one or more URLs from Search & Download in the embedded app player."""
+        from cast_http import (
+            get_cast_server_port,
+            is_cast_server_running,
+            start_cast_server,
+        )
+        from yt_core import (
+            extract_single_http_stream_url,
+            extract_split_video_audio_stream_urls,
+        )
+        from urllib.parse import quote as _quote
+
         cleaned = [u.strip() for u in urls if (u or "").strip()]
         if not cleaned:
             set_status("No URL to play.")
             page.update()
             return
+
         try:
+            # ── Step 1: extract stream URLs with yt-dlp while the spinner runs ──
+            # This MUST finish before the Video widget is created; otherwise
+            # libmpv opens the relay before Flask has data and reports
+            # "Failed to open" after ~3 s.
             async with async_busy(
-                "Search & Download — opening local stream relay in your video player…",
-                min_display_s=0.45,
+                "Search & Download — extracting stream…",
+                min_display_s=0.5,
             ):
-                await asyncio.to_thread(play_stream_urls, cleaned)
-            set_status("Player launch requested — check the video window or taskbar.")
-        except (OSError, ValueError) as e:
-            set_status(str(e))
+                if not is_cast_server_running():
+                    await asyncio.to_thread(start_cast_server, "127.0.0.1", 0)
+                port = get_cast_server_port()
+
+                async def _resolve_one(url: str) -> str | None:
+                    pair = await asyncio.to_thread(
+                        extract_split_video_audio_stream_urls, url
+                    )
+                    if pair:
+                        v, a = pair
+                        return (
+                            f"http://127.0.0.1:{port}/direct_stream"
+                            f"?v={_quote(v, safe='')}&a={_quote(a, safe='')}"
+                        )
+                    direct = await asyncio.to_thread(
+                        extract_single_http_stream_url, url
+                    )
+                    return direct  # may be None
+
+                results = await asyncio.gather(*(_resolve_one(u) for u in cleaned))
+
+            items = [
+                (f"Stream {i + 1}", r)
+                for i, r in enumerate(results)
+                if r
+            ]
+            if not items:
+                set_status("Could not extract any stream URL from the selection.")
+                page.update()
+                return
+
+            _player_debug(
+                "stream pre-extracted URLs: "
+                + ", ".join(u[:80] for _, u in items[:3])
+                + (f" (+{len(items) - 3} more)" if len(items) > 3 else "")
+            )
+            await load_player_urls(items, source_urls=cleaned)
+
+        except Exception as e:
+            msg = str(e) or type(e).__name__
+            _player_debug(f"stream play error: {type(e).__name__}: {msg}")
+            set_status(f"Stream error: {msg}")
         page.update()
 
-    async def pick_folder_dialog(initial: str | None) -> str | None:
+    async def pick_folder_dialog(
+        initial: str | None,
+        *,
+        title: str = "Choose save folder",
+    ) -> str | None:
         """Pick a folder using the in-app browser (no native OS dialogs)."""
         start = initial if initial and os.path.isdir(initial) else str(Path.home())
+        _player_debug(f"folder browser opening: initial={start!r}, title={title!r}")
         return await show_folder_browser_dialog(
             page,
             initial=start,
-            title="Choose save folder",
+            title=title,
             pick_mode=True,
             dismiss_dialog_fn=dismiss_dialog,
         )
@@ -617,7 +767,21 @@ def main(page: ft.Page) -> None:
             if u:
 
                 async def _row_play(_: ft.ControlEvent, url: str = u) -> None:
-                    await play_search_results_async([url])
+                    if use_internal_player():
+                        await play_search_results_async([url])
+                        return
+                    try:
+                        async with async_busy(
+                            "Opening this item in the external player…",
+                            min_display_s=0.35,
+                        ):
+                            await asyncio.to_thread(play_stream_urls, [url])
+                        set_status("External player launch requested.")
+                    except Exception as e:
+                        msg = str(e) or type(e).__name__
+                        _player_debug(f"external row play error: {type(e).__name__}: {msg}")
+                        set_status(f"External player error: {msg}")
+                    page.update()
 
                 row_cells.append(
                     ft.IconButton(
@@ -917,9 +1081,9 @@ def main(page: ft.Page) -> None:
             page.update()
             return
         fmt_i = _fmt_idx(dd_results_fmt)
-        if _preset_requires_ffmpeg_conversion(fmt_i) and not shutil.which("ffmpeg"):
+        if _preset_requires_ffmpeg_conversion(fmt_i) and not ffmpeg_available():
             set_status(
-                "This audio conversion preset needs ffmpeg (MP3/M4A). Install ffmpeg, then try again."
+                "This audio conversion preset needs ffmpeg (MP3/M4A). The app will use bundled ffmpeg when available."
             )
             page.update()
             return
@@ -940,7 +1104,21 @@ def main(page: ft.Page) -> None:
             set_status("Tick one or more rows to play.")
             page.update()
             return
-        await play_search_results_async(urls)
+        if use_internal_player():
+            await play_search_results_async(urls)
+            return
+        try:
+            async with async_busy(
+                f"Opening {len(urls)} selected item(s) in the external player…",
+                min_display_s=0.35,
+            ):
+                await asyncio.to_thread(play_stream_urls, urls)
+            set_status("External player launch requested with one playlist.")
+        except Exception as e:
+            msg = str(e) or type(e).__name__
+            _player_debug(f"external stream play error: {type(e).__name__}: {msg}")
+            set_status(f"External player error: {msg}")
+        page.update()
 
     btn_play_selected = ft.OutlinedButton(
         content="Play selected",
@@ -1123,6 +1301,7 @@ def main(page: ft.Page) -> None:
 
         st.lib_rows = scan_library()
         st.file_to_cast = None
+        st.cast_direct_url = None
         st.cast_stream_rels = None
         lib_checks.clear()
         lib_cb_all.value = False
@@ -1215,20 +1394,14 @@ def main(page: ft.Page) -> None:
         try:
             ini = str(st.library_view_dir or get_downloads_dir())
             ini = ini if os.path.isdir(ini) else str(get_downloads_dir())
-            async with async_busy("Opening folder browser…"):
-                picked = await show_folder_browser_dialog(
-                    page,
-                    initial=ini,
-                    title="Choose folder to list",
-                    pick_mode=True,
-                    dismiss_dialog_fn=dismiss_dialog,
-                )
+            picked = await pick_folder_dialog(ini, title="Choose folder to list")
             if picked:
                 st.library_view_dir = Path(picked).expanduser()
                 set_status(f"Library lists: {picked}")
             async with async_busy("Scanning chosen folder…"):
                 refresh_library()
         except Exception as e:
+            _player_debug(f"library browse error: {type(e).__name__}: {e}")
             set_status(str(e))
         page.update()
 
@@ -1332,12 +1505,12 @@ def main(page: ft.Page) -> None:
         try:
             initial = (tf_save_root.value or "").strip() or str(get_downloads_dir())
             ini = initial if os.path.isdir(initial) else str(get_downloads_dir())
-            async with async_busy("Opening folder browser…"):
-                picked = await pick_folder_dialog(ini)
+            picked = await pick_folder_dialog(ini)
             if picked:
                 tf_save_root.value = picked
                 page.update()
         except Exception as ex:
+            _player_debug(f"settings browse error: {type(ex).__name__}: {ex}")
             set_status(str(ex))
             page.update()
         finally:
@@ -1364,17 +1537,29 @@ def main(page: ft.Page) -> None:
 
     lib_cast_hint = ft.Text("", size=12, color=ft.Colors.GREY_500)
 
+    def _selected_library_items() -> list[tuple[str, Path]]:
+        return [st.lib_rows[i] for i, cb in enumerate(lib_checks) if cb.value and i < len(st.lib_rows)]
+
+    async def on_open_player(_: ft.ControlEvent) -> None:
+        items = _selected_library_items()
+        if not items:
+            set_status("Select one or more files for the app player.")
+            page.update()
+            return
+        await load_player_items(items)
+
     async def on_play(_: ft.ControlEvent) -> None:
-        sel = [i for i, cb in enumerate(lib_checks) if cb.value]
-        if not sel:
+        items = _selected_library_items()
+        if not items:
             set_status("Select one or more files.")
             page.update()
             return
-        paths = [st.lib_rows[i][1] for i in sel]
+        if use_internal_player():
+            await load_player_items(items)
+            return
         try:
-            async with async_busy("Opening video/audio in external player…"):
-                await asyncio.to_thread(play_media_files, paths)
-            set_status("")
+            await asyncio.to_thread(play_media_files, [p for _, p in items])
+            set_status("External player launch requested with one playlist.")
         except (OSError, ValueError) as e:
             set_status(str(e))
         page.update()
@@ -1385,12 +1570,19 @@ def main(page: ft.Page) -> None:
             set_status("Select at least one file.")
             page.update()
             return
-        st.cast_stream_rels = [st.lib_rows[i][0] for i in sel]
-        rel, _p = st.lib_rows[sel[0]]
+        try:
+            st.cast_stream_rels = [register_media_path(st.lib_rows[i][1]) for i in sel]
+        except OSError as e:
+            set_status(f"Cast file error: {e}")
+            page.update()
+            return
+        st.cast_direct_url = None
+        rel = st.cast_stream_rels[0]
+        _label, first_path = st.lib_rows[sel[0]]
         st.file_to_cast = rel
         if len(sel) > 1:
             set_status(f"Cast uses the first selected file ({len(sel)} selected).")
-        elif rel.lower().endswith(".mkv"):
+        elif first_path.suffix.lower() == ".mkv":
             set_status("MKV may not play on Chromecast; MP4 is safer.")
         else:
             set_status("")
@@ -1409,7 +1601,7 @@ def main(page: ft.Page) -> None:
         update_cast_stream_urls()
         lib_cast_hint.value = "Chromecast tab — tick one or more devices, then Start casting."
         if st.main_tabs is not None:
-            st.main_tabs.selected_index = 2
+            st.main_tabs.selected_index = 3
         if len(sel) > 1:
             set_status("Casting the first selected file — tick Chromecast device(s) in the Cast tab.")
         else:
@@ -1421,7 +1613,8 @@ def main(page: ft.Page) -> None:
 
     btn_lib_ref = ft.Button(content="Refresh list", icon=ft.Icons.REFRESH, on_click=on_lib_ref)
     btn_lib_open = ft.OutlinedButton("Browse folder", icon=ft.Icons.FOLDER_OPEN, on_click=on_lib_open)
-    btn_play = ft.Button(content="Play", icon=ft.Icons.PLAY_ARROW, on_click=on_play)
+    btn_play = ft.FilledButton(content="Play", icon=ft.Icons.PLAY_ARROW, on_click=on_play)
+    btn_player_open = ft.OutlinedButton("Open Player tab", icon=ft.Icons.PLAY_CIRCLE, on_click=on_open_player)
     btn_ren = ft.Button(content="Rename", icon=ft.Icons.DRIVE_FILE_RENAME_OUTLINE, on_click=on_rename)
     btn_del = ft.Button(content="Delete", icon=ft.Icons.DELETE_OUTLINE, color=ft.Colors.RED, on_click=on_del)
     btn_cast_prep = ft.Button(
@@ -1488,6 +1681,9 @@ def main(page: ft.Page) -> None:
         # After stop_cast_server() (e.g. HTTP idle), st.cast_port may be stale.
         if st.cast_port > 0 and not is_cast_server_running():
             st.cast_port = 0
+        if st.cast_direct_url:
+            cast_stream_urls_field.value = st.cast_direct_url
+            return
         if st.cast_port <= 0:
             cast_stream_urls_field.value = ""
             return
@@ -1557,7 +1753,7 @@ def main(page: ft.Page) -> None:
         page.update()
 
     async def on_cast_play(_: ft.ControlEvent) -> None:
-        if not st.file_to_cast:
+        if not st.file_to_cast and not st.cast_direct_url:
             set_status("Library → Prepare for Cast first.")
             page.update()
             return
@@ -1582,8 +1778,12 @@ def main(page: ft.Page) -> None:
             return
         targets = [st.cast_devices[i] for i in idxs]
         ip = get_lan_ip()
-        url = media_url(st.file_to_cast, ip, st.cast_port)
-        mime = guess_mime_for_cast(Path(st.file_to_cast).name)
+        if st.cast_direct_url:
+            url = st.cast_direct_url
+            mime = "video/mp4"
+        else:
+            url = media_url(st.file_to_cast, ip, st.cast_port)
+            mime = guess_mime_for_cast(Path(st.file_to_cast).name)
         try:
             async with async_busy(
                 f"Sending stream to {len(targets)} Chromecast(s) (Default Media Receiver)…"
@@ -1770,18 +1970,418 @@ def main(page: ft.Page) -> None:
         except Exception:
             st.cast_prog_guard = False
 
+    player_title = ft.Text("No media loaded", size=15, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_100)
+    player_hint = ft.Text(
+        "Select files in Library or Search results, then press Play. The embedded player uses flet-video/media_kit.",
+        size=11,
+        color=ft.Colors.GREY_500,
+    )
+    player_playlist = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO)
+
+    def _current_player_item() -> dict | None:
+        if not st.player_items:
+            return None
+        idx = min(max(int(st.player_index or 0), 0), len(st.player_items) - 1)
+        return st.player_items[idx]
+
+    def _refresh_player_playlist() -> None:
+        player_playlist.controls.clear()
+        for idx, item in enumerate(st.player_items[:80]):
+            color = ft.Colors.TEAL_100 if idx == st.player_index else ft.Colors.GREY_300
+            marker = "▶ " if idx == st.player_index else ""
+            title = str(item.get("title") or item.get("resource") or "Media")
+            player_playlist.controls.append(ft.Text(f"{marker}{title}", size=12, color=color))
+
+    def _set_player_repeat_label() -> None:
+        labels = ("off", "all", "one")
+        btn_player_repeat.content = f"Repeat: {labels[st.player_repeat_idx]}"
+
+    def _apply_player_repeat_mode() -> None:
+        if Video is None or PlaylistMode is None:
+            return
+        modes = (PlaylistMode.NONE, PlaylistMode.LOOP, PlaylistMode.SINGLE)
+        video = getattr(st, "player_video", None)
+        if video is not None:
+            video.playlist_mode = modes[st.player_repeat_idx]
+
+    async def on_player_loaded(_: ft.ControlEvent) -> None:
+        _player_debug("on_load: fired (media_kit initialized successfully)")
+        st.player_ready = True
+        if st.player_items:
+            btn_player_play_pause.icon = ft.Icons.PAUSE
+            btn_player_play_pause.content = "Pause"
+            set_status("Playing in the app player.")
+        page.update()
+
+    def _make_player_video(playlist: list | None = None, *, autoplay: bool = False) -> ft.Control:
+        if Video is None:
+            return ft.Container(
+                expand=True,
+                alignment=ft.Alignment.CENTER,
+                bgcolor=ft.Colors.BLACK,
+                border_radius=10,
+                content=ft.Text(
+                    "Integrated player dependency missing: flet-video.",
+                    color=ft.Colors.AMBER_200,
+                    size=13,
+                ),
+            )
+        return Video(
+            playlist=playlist or [],
+            autoplay=autoplay,
+            show_controls=True,
+            expand=True,
+            volume=float(player_volume_slider.value or 85),
+            fit=ft.BoxFit.CONTAIN,
+            fill_color=ft.Colors.BLACK,
+            playlist_mode=(PlaylistMode.NONE if PlaylistMode is not None else None),
+            shuffle_playlist=bool(st.player_shuffle),
+            on_load=on_player_loaded,
+            on_track_change=on_player_track_change,
+            on_error=on_player_error,
+        )
+
+    def _player_timeout_hint(e: Exception) -> str:
+        raw = str(e).strip() or type(e).__name__
+        low = raw.lower()
+        if "timeout" in low and "video" in low:
+            return (
+                f"{raw}. media_kit/libmpv did not answer. On Wayland/KDE, restart with "
+                "env -u FLET_SW_GL -u LIBGL_ALWAYS_SOFTWARE ./flet_app/run.sh; "
+                "if it persists, check libmpv/OpenGL."
+            )
+        return raw
+
+    async def _load_playlist_into_player(playlist: list) -> None:
+        if Video is None or VideoMedia is None:
+            set_status("Integrated player unavailable: install dependency flet-video, then rebuild/restart the app.")
+            _player_debug("cannot load playlist: flet-video unavailable")
+            page.update()
+            return
+
+        st.player_wait_token += 1
+        st.player_ready = False
+        btn_player_play_pause.icon = ft.Icons.PAUSE
+        btn_player_play_pause.content = "Loading..."
+        set_status("Loading player...")
+
+        try:
+            _player_debug(f"mounting Video widget with playlist ({len(playlist)} item(s), autoplay=True)")
+            new_video = _make_player_video(playlist, autoplay=True)
+            st.player_video = new_video
+            _apply_player_repeat_mode()
+            new_video.shuffle_playlist = bool(st.player_shuffle)
+            player_surface.content = new_video
+            btn_player_play_pause.icon = ft.Icons.PAUSE
+            btn_player_play_pause.content = "Pause"
+            set_status("Loading player...")
+        except Exception as e:
+            st.player_ready = False
+            btn_player_play_pause.icon = ft.Icons.PLAY_ARROW
+            btn_player_play_pause.content = "Play"
+            set_status(f"Player error: {_player_timeout_hint(e)}")
+            _player_debug(f"player exception: {type(e).__name__}: {e}")
+        page.update()
+
+    async def load_player_items(items: list[tuple[str, Path]]) -> None:
+        if Video is None or VideoMedia is None:
+            set_status("Integrated player unavailable: install dependency flet-video, then rebuild/restart the app.")
+            page.update()
+            return
+        clean: list[dict] = []
+        for rel, path in items:
+            p = path.expanduser().resolve()
+            if p.is_file():
+                clean.append(
+                    {
+                        "title": p.name,
+                        "resource": str(p),
+                        "path": p,
+                        "library_rel": rel,
+                        "source_url": None,
+                    }
+                )
+        if not clean:
+            set_status("No playable files found in the selection.")
+            page.update()
+            return
+
+        st.player_items = clean
+        st.player_index = 0
+        playlist = [
+            VideoMedia(resource=str(item["resource"]), extras={"title": str(item["title"])})
+            for item in clean
+        ]
+        _player_debug(
+            "library selection: "
+            + ", ".join(str(item["resource"]) for item in clean[:5])
+            + (f" (+{len(clean) - 5} more)" if len(clean) > 5 else "")
+        )
+        player_title.value = str(clean[0]["title"])
+        player_hint.value = f"{len(clean)} file(s) loaded in the app player."
+        _refresh_player_playlist()
+        if st.main_tabs is not None:
+            st.main_tabs.selected_index = 2
+        await _load_playlist_into_player(playlist)
+        page.update()
+
+    async def load_player_urls(
+        items: list[tuple[str, str]],
+        *,
+        source_urls: list[str] | None = None,
+    ) -> None:
+        if Video is None or VideoMedia is None:
+            set_status("Integrated player unavailable: install dependency flet-video, then rebuild/restart the app.")
+            page.update()
+            return
+        clean: list[dict] = []
+        sources = source_urls or []
+        for idx, (title, resource) in enumerate(items):
+            r = (resource or "").strip()
+            if not r:
+                continue
+            clean.append(
+                {
+                    "title": (title or f"Stream {idx + 1}").strip(),
+                    "resource": r,
+                    "path": None,
+                    "library_rel": None,
+                    "source_url": sources[idx] if idx < len(sources) else None,
+                }
+            )
+        if not clean:
+            set_status("No playable streams found in the selection.")
+            page.update()
+            return
+
+        st.player_items = clean
+        st.player_index = 0
+        playlist = [
+            VideoMedia(resource=str(item["resource"]), extras={"title": str(item["title"])})
+            for item in clean
+        ]
+        _player_debug(
+            "stream selection: "
+            + ", ".join(str(item["resource"]) for item in clean[:5])
+            + (f" (+{len(clean) - 5} more)" if len(clean) > 5 else "")
+        )
+        player_title.value = str(clean[0]["title"])
+        player_hint.value = f"{len(clean)} stream(s) loaded in the app player."
+        _refresh_player_playlist()
+        if st.main_tabs is not None:
+            st.main_tabs.selected_index = 2
+        await _load_playlist_into_player(playlist)
+        page.update()
+
+    async def on_player_play_pause(_: ft.ControlEvent) -> None:
+        if Video is None or not st.player_items:
+            set_status("Load files into Player first.")
+            page.update()
+            return
+        video = getattr(st, "player_video", None)
+        if video is None or not st.player_ready:
+            set_status("Player is still loading. Try again in a moment.")
+            page.update()
+            return
+        try:
+            playing = await video.is_playing()
+            if playing:
+                await video.pause()
+                btn_player_play_pause.icon = ft.Icons.PLAY_ARROW
+                btn_player_play_pause.content = "Resume"
+            else:
+                await video.play()
+                btn_player_play_pause.icon = ft.Icons.PAUSE
+                btn_player_play_pause.content = "Pause"
+        except Exception as e:
+            set_status(f"Player error: {_player_timeout_hint(e)}")
+            _player_debug(f"play/pause failed: {type(e).__name__}: {e}")
+        page.update()
+
+    async def on_player_stop(_: ft.ControlEvent) -> None:
+        if Video is None or not st.player_items:
+            set_status("Load files into Player first.")
+            page.update()
+            return
+        video = getattr(st, "player_video", None)
+        if video is None or not st.player_ready:
+            set_status("Player is still loading. Try again in a moment.")
+            page.update()
+            return
+        try:
+            await video.stop()
+            btn_player_play_pause.icon = ft.Icons.PLAY_ARROW
+            btn_player_play_pause.content = "Play"
+            set_status("Player stopped.")
+        except Exception as e:
+            set_status(f"Player error: {_player_timeout_hint(e)}")
+            _player_debug(f"stop failed: {type(e).__name__}: {e}")
+        page.update()
+
+    async def on_player_prev(_: ft.ControlEvent) -> None:
+        if Video is None or not st.player_items:
+            set_status("Load files into Player first.")
+            page.update()
+            return
+        video = getattr(st, "player_video", None)
+        if video is None or not st.player_ready:
+            set_status("Player is still loading. Try again in a moment.")
+            page.update()
+            return
+        try:
+            await video.previous()
+        except Exception as e:
+            set_status(f"Player error: {_player_timeout_hint(e)}")
+            _player_debug(f"previous failed: {type(e).__name__}: {e}")
+        page.update()
+
+    async def on_player_next(_: ft.ControlEvent) -> None:
+        if Video is None or not st.player_items:
+            set_status("Load files into Player first.")
+            page.update()
+            return
+        video = getattr(st, "player_video", None)
+        if video is None or not st.player_ready:
+            set_status("Player is still loading. Try again in a moment.")
+            page.update()
+            return
+        try:
+            await video.next()
+        except Exception as e:
+            set_status(f"Player error: {_player_timeout_hint(e)}")
+            _player_debug(f"next failed: {type(e).__name__}: {e}")
+        page.update()
+
+    async def on_player_repeat(_: ft.ControlEvent) -> None:
+        st.player_repeat_idx = (st.player_repeat_idx + 1) % 3
+        _set_player_repeat_label()
+        _apply_player_repeat_mode()
+        page.update()
+
+    async def on_player_shuffle(_: ft.ControlEvent) -> None:
+        st.player_shuffle = not st.player_shuffle
+        btn_player_shuffle.content = "Shuffle: on" if st.player_shuffle else "Shuffle: off"
+        video = getattr(st, "player_video", None)
+        if Video is not None and video is not None:
+            video.shuffle_playlist = bool(st.player_shuffle)
+        page.update()
+
+    async def on_player_volume(e: ft.ControlEvent) -> None:
+        if Video is None:
+            return
+        video = getattr(st, "player_video", None)
+        if video is None:
+            return
+        try:
+            video.volume = float(e.control.value)
+        except (TypeError, ValueError):
+            return
+        page.update()
+
+    async def on_player_cast(_: ft.ControlEvent) -> None:
+        current = _current_player_item()
+        if current is None:
+            set_status("Load files into Player first.")
+            page.update()
+            return
+        path = current.get("path")
+        source_url = (current.get("source_url") or "").strip()
+        if isinstance(path, Path):
+            try:
+                cast_rel = register_media_path(path)
+            except OSError as e:
+                set_status(f"Cast file error: {e}")
+                page.update()
+                return
+            st.cast_direct_url = None
+            st.file_to_cast = cast_rel
+            st.cast_stream_rels = [cast_rel]
+            media_name = path.name
+        elif source_url:
+            try:
+                st.cast_direct_url = remote_stream_urls_for_app_player([source_url], host=get_lan_ip())[0]
+            except Exception as e:
+                set_status(f"Cast stream error: {e}")
+                page.update()
+                return
+            st.file_to_cast = None
+            st.cast_stream_rels = None
+            media_name = str(current.get("title") or "stream")
+        else:
+            set_status("This Player item cannot be cast.")
+            page.update()
+            return
+        try:
+            await ensure_cast_http()
+        except Exception as e:
+            set_status(f"HTTP server error: {e}")
+            page.update()
+            return
+        w = get_cast_discovery_wait_s()
+        async with async_busy(f"Scanning for Chromecast devices (waiting up to {w:.0f}s)…"):
+            st.cast_devices = await asyncio.to_thread(discover_chromecasts, w)
+        rebuild_cast_list()
+        update_cast_stream_urls()
+        if st.main_tabs is not None:
+            st.main_tabs.selected_index = 3
+        set_status(f"Ready to cast: {media_name}. Tick a device, then Start casting.")
+        page.update()
+
+    async def on_player_track_change(e: ft.ControlEvent) -> None:
+        try:
+            st.player_index = int(str(e.data))
+        except (TypeError, ValueError):
+            return
+        current = _current_player_item()
+        if current:
+            player_title.value = str(current.get("title") or "Media")
+            _refresh_player_playlist()
+            page.update()
+
+    async def on_player_error(e: ft.ControlEvent) -> None:
+        set_status(f"Player error: {e.data}")
+        _player_debug(f"on_error: {e.data}")
+        page.update()
+
+    btn_player_play_pause = ft.OutlinedButton("Pause", icon=ft.Icons.PAUSE, on_click=on_player_play_pause)
+    btn_player_stop = ft.Button("Stop", icon=ft.Icons.STOP, on_click=on_player_stop)
+    btn_player_prev = ft.IconButton(icon=ft.Icons.SKIP_PREVIOUS, tooltip="Previous", on_click=on_player_prev)
+    btn_player_next = ft.IconButton(icon=ft.Icons.SKIP_NEXT, tooltip="Next", on_click=on_player_next)
+    btn_player_repeat = ft.OutlinedButton("Repeat: off", icon=ft.Icons.REPEAT, on_click=on_player_repeat)
+    btn_player_shuffle = ft.OutlinedButton("Shuffle: off", icon=ft.Icons.SHUFFLE, on_click=on_player_shuffle)
+    btn_player_cast = ft.FilledButton("Chromecast", icon=ft.Icons.CAST_CONNECTED, on_click=on_player_cast)
+    player_volume_slider = ft.Slider(
+        min=0,
+        max=100,
+        value=85,
+        width=320,
+        divisions=20,
+        label="Volume",
+        on_change_end=on_player_volume,
+    )
+
+    st.player_video = _make_player_video([], autoplay=False)
+    player_surface = ft.Container(
+        content=st.player_video,
+        height=360,
+        bgcolor=ft.Colors.BLACK,
+        border=ft.Border.all(1, ft.Colors.GREY_700),
+        border_radius=10,
+        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+    )
+
     async def on_search_download_to_folder(e: ft.ControlEvent) -> None:
         btn = e.control
         try:
             initial = str(effective_search_download_dir())
             ini = initial if os.path.isdir(initial) else str(Path.home())
-            async with async_busy("Opening folder browser…"):
-                picked = await pick_folder_dialog(ini)
+            picked = await pick_folder_dialog(ini, title="Choose download folder")
             if picked:
                 st.search_session_dir = Path(picked)
                 refresh_search_dl_folder_label()
                 set_status(f"Session folder (this tab only): {picked}")
         except Exception as ex:
+            _player_debug(f"search browse error: {type(ex).__name__}: {ex}")
             set_status(str(ex))
         finally:
             btn.disabled = False
@@ -1885,6 +2485,7 @@ def main(page: ft.Page) -> None:
                         lib_cb_all,
                         btn_lib_ref,
                         btn_play,
+                        btn_player_open,
                         btn_ren,
                         btn_del,
                         btn_cast_prep,
@@ -1915,6 +2516,61 @@ def main(page: ft.Page) -> None:
         border_radius=14,
         shadow=_TAB_PANEL_SHADOW,
         expand=True,
+    )
+
+    tab_player = ft.Container(
+        content=ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Column([player_title, player_hint], spacing=3, tight=True, expand=True),
+                        btn_player_cast,
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    wrap=True,
+                ),
+                player_surface,
+                ft.Row(
+                    [
+                        btn_player_prev,
+                        btn_player_play_pause,
+                        btn_player_stop,
+                        btn_player_next,
+                        btn_player_repeat,
+                        btn_player_shuffle,
+                    ],
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.VOLUME_UP, size=18, color=ft.Colors.GREY_500),
+                        player_volume_slider,
+                    ],
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Text("Playlist", weight=ft.FontWeight.W_600, size=13, color=ft.Colors.GREY_300),
+                ft.Container(
+                    content=player_playlist,
+                    height=110,
+                    bgcolor=ft.Colors.with_opacity(0.24, ft.Colors.BLACK),
+                    border=ft.Border.all(1, ft.Colors.GREY_800),
+                    border_radius=8,
+                    padding=8,
+                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                ),
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        ),
+        expand=True,
+        padding=14,
+        gradient=_TAB_GRADIENT,
+        border_radius=14,
+        shadow=_TAB_PANEL_SHADOW,
     )
 
     cast_panel_left = ft.Container(
@@ -2018,6 +2674,21 @@ def main(page: ft.Page) -> None:
         expand=True,
         hint_text="Search “Play” stream: this first, then Audio command · mpv gets a window for audio-only",
     )
+    dd_playback_mode = ft.Dropdown(
+        label="Play button uses",
+        value=get_playback_mode(),
+        width=360,
+        options=[
+            ft.dropdown.Option(
+                key="external",
+                text="External player (recommended on Linux)",
+            ),
+            ft.dropdown.Option(
+                key="internal",
+                text="Internal app player",
+            ),
+        ],
+    )
     tf_cast_disc_wait = ft.TextField(
         label="Chromecast discovery wait (seconds)",
         value=str(get_cast_discovery_wait_s()),
@@ -2094,6 +2765,7 @@ def main(page: ft.Page) -> None:
         tf_save_root.value = str(get_downloads_dir())
         tf_audio_player.value = get_audio_player_command()
         tf_video_player.value = get_video_player_command()
+        dd_playback_mode.value = get_playback_mode()
         tf_cast_disc_wait.value = str(get_cast_discovery_wait_s())
         v = get_installed_ytdlp_version()
         settings_info_txt.value = f"yt-dlp (installed): {v}"
@@ -2116,6 +2788,7 @@ def main(page: ft.Page) -> None:
     async def on_save_player_settings(_: ft.ControlEvent) -> None:
         set_audio_player_command(tf_audio_player.value or "")
         set_video_player_command(tf_video_player.value or "")
+        set_playback_mode(str(dd_playback_mode.value or "external"))
         try:
             w = float((tf_cast_disc_wait.value or "3").strip())
             set_cast_discovery_wait_s(w)
@@ -2166,8 +2839,15 @@ def main(page: ft.Page) -> None:
                 # — Local playback
                 ft.Text("Playback on this PC", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
                 ft.Text(
-                    "Commands for Library → Play. Leave empty for the system default. "
-                    "Multiple files open as a temporary playlist (Library order); command picked by file type.",
+                    "Choose whether Play uses the app player or an external player. "
+                    "On Linux, the internal video renderer can hit a media_kit/Flutter EGL bug, so external is recommended.",
+                    size=11,
+                    color=ft.Colors.GREY_500,
+                ),
+                dd_playback_mode,
+                ft.Text(
+                    "External player commands. Leave empty for the system default. "
+                    "Multiple selected files or streams open as one temporary playlist.",
                     size=11,
                     color=ft.Colors.GREY_500,
                 ),
@@ -2461,15 +3141,15 @@ def main(page: ft.Page) -> None:
                 async with async_busy("Loading library tab (scanning folders)…"):
                     refresh_library()
                 page.update()
-        elif idx == 2:
+        elif idx == 3:
             update_cast_stream_urls()
             page.update()
-        elif idx == 3:
+        elif idx == 4:
             refresh_settings_tab()
             page.update()
 
     tabs = ft.Tabs(
-        length=7,
+        length=8,
         selected_index=0,
         on_change=on_tabs_change,
         content=ft.Column(
@@ -2478,6 +3158,7 @@ def main(page: ft.Page) -> None:
                     tabs=[
                         ft.Tab(label="Search & Download", icon=ft.Icons.SEARCH),
                         ft.Tab(label="Library", icon=ft.Icons.VIDEO_LIBRARY),
+                        ft.Tab(label="Player", icon=ft.Icons.PLAY_CIRCLE),
                         ft.Tab(label="Chromecast", icon=ft.Icons.CAST),
                         ft.Tab(label="Settings", icon=ft.Icons.SETTINGS),
                         ft.Tab(label="Donate", icon=ft.Icons.VOLUNTEER_ACTIVISM),
@@ -2493,6 +3174,7 @@ def main(page: ft.Page) -> None:
                     controls=[
                         tab_search_url,
                         tab_lib,
+                        tab_player,
                         tab_cast,
                         tab_settings,
                         tab_donate,

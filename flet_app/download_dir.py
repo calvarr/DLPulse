@@ -127,6 +127,22 @@ def set_audio_player_command(cmd: str) -> None:
     _write_settings(data)
 
 
+def get_playback_mode() -> str:
+    mode = str(_read_settings().get("playback_mode") or "external").strip().lower()
+    return mode if mode in ("external", "internal") else "external"
+
+
+def set_playback_mode(mode: str) -> None:
+    value = (mode or "").strip().lower()
+    if value not in ("external", "internal"):
+        value = "external"
+    data = _read_settings()
+    data["playback_mode"] = value
+    if "download_dir" not in data:
+        data["download_dir"] = str(get_downloads_dir())
+    _write_settings(data)
+
+
 def get_cast_discovery_wait_s() -> float:
     raw = _read_settings().get("cast_discovery_wait_s", 3)
     try:

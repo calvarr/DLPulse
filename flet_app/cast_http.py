@@ -8,15 +8,17 @@ registered Chromecast is stopped automatically (nothing left to stream).
 from __future__ import annotations
 
 import logging
-import shutil
+import hashlib
+import os
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
-from flask import Flask, Response, abort, redirect, request, send_file, stream_with_context
+from flask import Flask, Response, abort, request, send_file, stream_with_context
 from werkzeug.exceptions import RequestedRangeNotSatisfiable
 from werkzeug.utils import secure_filename
 
@@ -25,10 +27,13 @@ if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
 from download_dir import get_downloads_dir
+from ffmpeg_tools import apply_bundled_tool_path, find_ffmpeg
 
 app = Flask(__name__)
 
 _log = logging.getLogger(__name__)
+
+apply_bundled_tool_path()
 
 # After playback ends, in-flight HTTP usually drops to zero; brief gaps between
 # Range requests are short. This delay avoids stopping mid-buffer.
@@ -46,6 +51,10 @@ _last_cast_host_tuple: tuple[str, int, object, str | None, str | None] | None = 
 
 # Devices to stop when /media/ stays idle (multi-cast: all targets).
 _idle_host_tuples: list[tuple[str, int, object, str | None, str | None]] = []
+
+# Extra absolute files selected through Library Browse / Player. Keys are served
+# through the same /media/ and /stream/ routes as downloads.
+_extra_media_paths: dict[str, Path] = {}
 
 
 def register_cast_idle_targets(
@@ -184,11 +193,27 @@ def _idle_watcher_loop() -> None:
             _log.debug("Idle Chromecast stop failed: %s", e, exc_info=True)
 
 
+def register_media_path(path: Path) -> str:
+    p = path.expanduser().resolve()
+    if not p.is_file():
+        raise FileNotFoundError(str(p))
+    digest = hashlib.sha256(str(p).encode("utf-8")).hexdigest()[:16]
+    rel = f"external/{digest}/{secure_filename(p.name) or p.name}"
+    with _idle_lock:
+        _extra_media_paths[rel] = p
+    return rel
+
+
 def _safe_path(rel: str) -> Path | None:
     if not rel or ".." in rel:
         return None
+    rel_norm = rel.replace("\\", "/").lstrip("/")
+    with _idle_lock:
+        extra = _extra_media_paths.get(rel_norm)
+    if extra is not None and extra.is_file():
+        return extra
     base = get_downloads_dir().resolve()
-    p = (base / rel).resolve()
+    p = (base / rel_norm).resolve()
     try:
         p.relative_to(base)
     except ValueError:
@@ -274,68 +299,246 @@ def _allowed_remote_page_url(u: str) -> bool:
     return False
 
 
+def _proxy_remote_media(url: str):
+    headers = {
+        "User-Agent": request.headers.get(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) DLPulse/1.0",
+        ),
+        "Accept": request.headers.get("Accept", "*/*"),
+    }
+    range_header = request.headers.get("Range")
+    if range_header:
+        headers["Range"] = range_header
+
+    upstream = urlopen(Request(url, headers=headers), timeout=30)
+    _media_transfer_started()
+
+    def _gen():
+        try:
+            while True:
+                chunk = upstream.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                if upstream is not None:
+                    upstream.close()
+            finally:
+                _media_transfer_ended()
+
+    content_type = upstream.headers.get("Content-Type") or "application/octet-stream"
+    status = getattr(upstream, "status", None) or (206 if range_header else 200)
+    resp = Response(stream_with_context(_gen()), status=status, mimetype=content_type)
+    resp.headers["Content-Disposition"] = "inline"
+    resp.headers["Accept-Ranges"] = upstream.headers.get("Accept-Ranges") or "bytes"
+    content_length = upstream.headers.get("Content-Length")
+    content_range = upstream.headers.get("Content-Range")
+    if content_length:
+        resp.headers["Content-Length"] = content_length
+    if content_range:
+        resp.headers["Content-Range"] = content_range
+    return resp
+
+
+def _ffmpeg_mux_remote_media(*urls: str):
+    ffmpeg = find_ffmpeg()
+    clean = [u for u in urls if u]
+    if not ffmpeg or not clean:
+        return None
+
+    def _gen():
+        proc: subprocess.Popen | None = None
+        _media_transfer_started()
+        try:
+            cmd = [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_delay_max",
+                "5",
+            ]
+            for url in clean:
+                cmd.extend(["-i", url])
+            if len(clean) > 1:
+                cmd.extend(["-map", "0:v:0", "-map", "1:a:0"])
+            else:
+                cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
+            cmd.extend(
+                [
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-tune",
+                    "zerolatency",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "160k",
+                    "-movflags",
+                    "frag_keyframe+empty_moov+default_base_moof",
+                    "-f",
+                    "mp4",
+                    "pipe:1",
+                ]
+            )
+            _log.warning("remote_stream ffmpeg: %s", " ".join(cmd[:8] + ["..."]))
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "AV_LOG_FORCE_NOCOLOR": "1"},
+            )
+            if proc.stdout is None:
+                return
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            if proc is not None:
+                if proc.poll() is None:
+                    proc.kill()
+                try:
+                    err = proc.stderr.read(8192).decode("utf-8", "replace") if proc.stderr else ""
+                except Exception:
+                    err = ""
+                if err.strip():
+                    _log.warning("remote_stream ffmpeg stderr: %s", err.strip()[-2000:])
+            _media_transfer_ended()
+
+    resp = Response(stream_with_context(_gen()), mimetype="video/mp4")
+    resp.headers["Content-Disposition"] = "inline"
+    resp.headers["Accept-Ranges"] = "none"
+    return resp
+
+
 @app.route("/remote_stream")
 def remote_stream():
     """
     Stream in the player without downloading: resolve media via yt-dlp.
-    - Single progressive / direct URL → HTTP 302 redirect.
-    - DASH (video + audio): if ``ffmpeg`` is available, mux Matroska to the player; else redirect video only.
+    - Single progressive / direct URL → proxy bytes locally (media_kit can fail on 302 to signed YouTube URLs).
+    - DASH (video + audio): if ``ffmpeg`` is available, mux Matroska to the player; else proxy video only.
     """
     page = (request.args.get("u") or "").strip()
     if not page or not _allowed_remote_page_url(page):
         abort(400)
     from yt_core import extract_single_http_stream_url, extract_split_video_audio_stream_urls
 
+    pair = extract_split_video_audio_stream_urls(page)
+    ffmpeg = find_ffmpeg()
+    if pair and ffmpeg:
+        muxed = _ffmpeg_mux_remote_media(pair[0], pair[1])
+        if muxed is not None:
+            return muxed
     direct = extract_single_http_stream_url(page)
     if direct:
-        return redirect(direct, code=302)
-    pair = extract_split_video_audio_stream_urls(page)
-    ffmpeg = shutil.which("ffmpeg")
-    if pair and ffmpeg:
-        v_url, a_url = pair
-
-        def _gen():
-            proc: subprocess.Popen | None = None
-            _media_transfer_started()
-            try:
-                proc = subprocess.Popen(
-                    [
-                        ffmpeg,
-                        "-nostdin",
-                        "-loglevel",
-                        "error",
-                        "-i",
-                        v_url,
-                        "-i",
-                        a_url,
-                        "-c",
-                        "copy",
-                        "-f",
-                        "matroska",
-                        "pipe:1",
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                )
-                if proc.stdout is None:
-                    return
-                while True:
-                    chunk = proc.stdout.read(65536)
-                    if not chunk:
-                        break
-                    yield chunk
-            finally:
-                if proc is not None and proc.poll() is None:
-                    proc.kill()
-                _media_transfer_ended()
-
-        resp = Response(stream_with_context(_gen()), mimetype="video/x-matroska")
-        resp.headers["Content-Disposition"] = "inline"
-        resp.headers["Accept-Ranges"] = "none"
-        return resp
+        muxed = _ffmpeg_mux_remote_media(direct)
+        if muxed is not None:
+            return muxed
+        return _proxy_remote_media(direct)
     if pair:
-        return redirect(pair[0], code=302)
+        return _proxy_remote_media(pair[0])
     abort(502)
+
+
+@app.route("/direct_stream")
+def direct_stream():
+    """
+    Mux pre-extracted video/audio URLs with ffmpeg immediately — no yt-dlp delay.
+
+    Query params:
+      v=<video_url>   required
+      a=<audio_url>   optional (omit for single-stream sources)
+
+    This endpoint is used by the embedded app player when stream URLs have
+    already been resolved by yt-dlp in the Python layer.  ffmpeg starts
+    instantly (no extraction wait), so libmpv never times out.
+
+    Uses ``-c copy`` to remux without re-encoding (fast start, low CPU).
+    Output format: Matroska (MKV), which handles any codec combination.
+    """
+    v = (request.args.get("v") or "").strip()
+    a = (request.args.get("a") or "").strip()
+    if not v:
+        abort(400)
+
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        abort(503)
+
+    def _gen():
+        proc: subprocess.Popen | None = None
+        _media_transfer_started()
+        try:
+            cmd = [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel", "warning",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
+                "-i", v,
+            ]
+            if a:
+                cmd += [
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "5",
+                    "-i", a,
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                ]
+            else:
+                cmd += ["-map", "0:v:0?", "-map", "0:a:0?"]
+            cmd += ["-c", "copy", "-f", "matroska", "pipe:1"]
+            _log.info("direct_stream ffmpeg: %s", " ".join(cmd[:10] + ["..."]))
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "AV_LOG_FORCE_NOCOLOR": "1"},
+            )
+            if proc.stdout is None:
+                return
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            if proc is not None:
+                if proc.poll() is None:
+                    proc.kill()
+                try:
+                    err = (
+                        proc.stderr.read(8192).decode("utf-8", "replace")
+                        if proc.stderr
+                        else ""
+                    )
+                except Exception:
+                    err = ""
+                if err.strip():
+                    _log.warning("direct_stream ffmpeg stderr: %s", err.strip()[-2000:])
+            _media_transfer_ended()
+
+    from flask import stream_with_context
+    resp = Response(stream_with_context(_gen()), mimetype="video/x-matroska")
+    resp.headers["Content-Disposition"] = "inline"
+    resp.headers["Accept-Ranges"] = "none"
+    return resp
 
 
 _server_thread: threading.Thread | None = None

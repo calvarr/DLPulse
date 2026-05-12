@@ -10,6 +10,8 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import yt_dlp
 
+from ffmpeg_tools import ffmpeg_location_for_ytdlp
+
 # Swallows yt-dlp stderr-style messages during format retries (real failure still returned as exception).
 class _YtdlpQuietLogger:
     def debug(self, msg: str) -> None:
@@ -336,6 +338,9 @@ def download_artwork_files(
         "writethumbnail": True,
         "logger": _YtdlpQuietLogger(),
     }
+    ffmpeg_location = ffmpeg_location_for_ytdlp()
+    if ffmpeg_location:
+        opts["ffmpeg_location"] = ffmpeg_location
     cookiefile = _cookiefile_path()
     if cookiefile:
         opts["cookiefile"] = cookiefile
@@ -512,6 +517,9 @@ def run_download(
         "ignoreerrors": False,
         "logger": _YtdlpQuietLogger(),
     }
+    ffmpeg_location = ffmpeg_location_for_ytdlp()
+    if ffmpeg_location:
+        base_opts["ffmpeg_location"] = ffmpeg_location
     if no_playlist:
         base_opts["noplaylist"] = True
     cookiefile = _cookiefile_path()
@@ -846,7 +854,7 @@ def extract_split_video_audio_stream_urls(page_url: str) -> tuple[str, str] | No
         "ignoreerrors": False,
         "logger": _YtdlpQuietLogger(),
         "noplaylist": True,
-        "format": "bestvideo+bestaudio/bestvideo+ba/best",
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio/bestvideo+ba/best",
     }
     if cookiefile:
         base_opts["cookiefile"] = cookiefile

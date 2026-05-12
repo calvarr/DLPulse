@@ -544,7 +544,7 @@ async def show_folder_browser_dialog(
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Text(title),
-        content=ft.Container(content=content_col, padding=ft.padding.only(top=4)),
+        content=ft.Container(content=content_col, padding=ft.Padding.only(top=4)),
         actions=actions,
         actions_alignment=ft.MainAxisAlignment.END,
         on_dismiss=on_dismiss_dlg,

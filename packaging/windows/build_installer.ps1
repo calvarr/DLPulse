@@ -1,6 +1,19 @@
 # Run after ``flet build windows`` from the repo root ``yt/``.
 # Find ``runner\Release``, copy to a staging path without spaces, run NSIS.
 $ErrorActionPreference = "Stop"
+
+function Add-BundledFfmpeg {
+    param([string]$StageDir)
+    $binDir = Join-Path $StageDir "bin"
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+    $ffmpeg = (& python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())" 2>$null).Trim()
+    if (-not $ffmpeg -or -not (Test-Path $ffmpeg)) {
+        throw "imageio-ffmpeg did not provide an ffmpeg executable."
+    }
+    Copy-Item -Path $ffmpeg -Destination (Join-Path $binDir "ffmpeg.exe") -Force
+    Write-Host "Bundled ffmpeg: $binDir\ffmpeg.exe"
+}
+
 $Root = if ($args[0]) { $args[0] } else { Get-Location }
 Push-Location $Root
 try {
@@ -19,6 +32,7 @@ try {
         Remove-Item -Recurse -Force $stage
     }
     Copy-Item -Path $release.FullName -Destination $stage -Recurse
+    Add-BundledFfmpeg $stage
 
     $exeObj = Get-ChildItem -Path $stage -Filter "*.exe" -File | Select-Object -First 1
     if (-not $exeObj) {

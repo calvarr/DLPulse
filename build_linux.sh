@@ -77,7 +77,7 @@ print(h.hexdigest())
 DIGEST="$(req_digest)"
 NEED_INSTALL=1
 if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP" 2>/dev/null | head -1)" == "$DIGEST" ]] \
-    && "$VENV_PY" -c "import flet, yt_dlp, flask, pychromecast" 2>/dev/null \
+    && "$VENV_PY" -c "import flet, yt_dlp, flask, pychromecast, imageio_ffmpeg, flet_video" 2>/dev/null \
     && [[ -x "$FLET" ]]; then
     NEED_INSTALL=0
 fi
@@ -114,6 +114,7 @@ fi
 
 export CFLAGS="${CFLAGS:+$CFLAGS }-Wno-macro-redefined"
 export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-Wno-macro-redefined"
+export FLET_DESKTOP_FLAVOR="${FLET_DESKTOP_FLAVOR:-full}"
 
 info "flet build linux …"
 "$FLET" build linux --yes "${EXTRA_ARGS[@]}"
