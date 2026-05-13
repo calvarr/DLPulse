@@ -467,7 +467,8 @@ def direct_stream():
     instantly (no extraction wait), so libmpv never times out.
 
     Uses ``-c copy`` to remux without re-encoding (fast start, low CPU).
-    Output format: Matroska (MKV), which handles any codec combination.
+    Output format: fragmented MP4, which flet_video/media_kit handles more
+    reliably than Matroska for embedded playback.
     """
     v = (request.args.get("v") or "").strip()
     a = (request.args.get("a") or "").strip()
@@ -503,7 +504,15 @@ def direct_stream():
                 ]
             else:
                 cmd += ["-map", "0:v:0?", "-map", "0:a:0?"]
-            cmd += ["-c", "copy", "-f", "matroska", "pipe:1"]
+            cmd += [
+                "-c",
+                "copy",
+                "-movflags",
+                "frag_keyframe+empty_moov+default_base_moof",
+                "-f",
+                "mp4",
+                "pipe:1",
+            ]
             _log.info("direct_stream ffmpeg: %s", " ".join(cmd[:10] + ["..."]))
             proc = subprocess.Popen(
                 cmd,
@@ -535,7 +544,7 @@ def direct_stream():
             _media_transfer_ended()
 
     from flask import stream_with_context
-    resp = Response(stream_with_context(_gen()), mimetype="video/x-matroska")
+    resp = Response(stream_with_context(_gen()), mimetype="video/mp4")
     resp.headers["Content-Disposition"] = "inline"
     resp.headers["Accept-Ranges"] = "none"
     return resp

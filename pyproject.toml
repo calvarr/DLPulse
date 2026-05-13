@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 
 # Flet bundle dependencies; optional ``pip install -e ".[tui]"`` for the Textual CLI/TUI.
 dependencies = [
-    "flet>=0.85.0",
+    "flet==0.84.0",
     "yt-dlp>=2024.1.0",
     "mutagen>=1.47.0",
     "packaging>=23.0",
@@ -14,7 +14,8 @@ dependencies = [
     "pychromecast>=14.0.0",
     "zeroconf>=0.132.0",
     "imageio-ffmpeg>=0.5.1",
-    "flet-video>=0.85.0",
+    "flet-video==0.84.0",
+    "flet-desktop==0.84.0",
 ]
 
 [project.optional-dependencies]

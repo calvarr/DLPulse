@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import signal
+import threading
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 import shutil
@@ -15,20 +17,36 @@ from types import SimpleNamespace
 
 
 def _apply_linux_gl_env() -> None:
+    """Optional Linux GL/GDK tweaks before Flet starts.
+
+    By default does **nothing** so embedded video matches a plain ``python vd.py`` session.
+    Set ``DLPULSE_LEGACY_LINUX_GL_ENV=1`` to restore the previous GDK/Flet SW-GL overrides
+    (Wayland helpers, strip GLES, optional GDK_GL=gl, MESA_NO_ERROR, etc.).
+    """
     if not sys.platform.startswith("linux"):
         return
 
     def _truthy(name: str) -> bool:
         return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
-    if not _truthy("DLPULSE_NO_GDK_GLES"):
-        os.environ.setdefault("GDK_GL", "gles")
+    if not _truthy("DLPULSE_LEGACY_LINUX_GL_ENV"):
+        return
 
     wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or (
         os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
     )
     use_wayland_fix = wayland and not _truthy("FLET_NO_WAYLAND_FIX")
     force_sw_gl = _truthy("FLET_SW_GL")
+
+    if not _truthy("DLPULSE_NO_GDK_GLES"):
+        if use_wayland_fix or _truthy("DLPULSE_FORCE_GLES"):
+            os.environ.setdefault("GDK_GL", "gles")
+        else:
+            cur = (os.environ.get("GDK_GL") or "").strip().lower()
+            if cur == "gles":
+                os.environ.pop("GDK_GL", None)
+            if not _truthy("DLPULSE_NO_EXPLICIT_GDK_GL"):
+                os.environ.setdefault("GDK_GL", "gl")
 
     if force_sw_gl:
         os.environ.setdefault("FLET_SW_GL", "1")
@@ -41,8 +59,6 @@ def _apply_linux_gl_env() -> None:
         if not os.environ.get("DISPLAY"):
             os.environ.setdefault("DISPLAY", ":0")
         os.environ.pop("WAYLAND_DISPLAY", None)
-    if os.environ.get("DISPLAY"):
-        os.environ.setdefault("EGL_PLATFORM", "x11")
     os.environ.setdefault("MESA_NO_ERROR", "1")
 
 
@@ -65,12 +81,11 @@ apply_bundled_tool_path()
 
 _FLET_VIDEO_IMPORT_ERROR: Exception | None = None
 try:
-    from flet_video import PlaylistMode, Video, VideoConfiguration, VideoMedia
+    from flet_video import PlaylistMode, Video, VideoMedia
 except Exception as e:
     _FLET_VIDEO_IMPORT_ERROR = e
     PlaylistMode = None  # type: ignore[assignment]
     Video = None  # type: ignore[assignment]
-    VideoConfiguration = None  # type: ignore[assignment]
     VideoMedia = None  # type: ignore[assignment]
 
 
@@ -272,6 +287,61 @@ def dismiss_dialog(dlg: ft.DialogControl) -> None:
     dlg.update()
 
 
+_external_player_lock = threading.Lock()
+_external_player_proc: subprocess.Popen | None = None
+
+
+def _terminate_popen_process(proc: subprocess.Popen | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if os.name != "nt" and proc.pid:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.terminate()
+        else:
+            proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=2.5)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _terminate_tracked_external_player() -> None:
+    """Stop the last external player process started from DLPulse (if still running)."""
+    global _external_player_proc
+    with _external_player_lock:
+        proc = _external_player_proc
+        _external_player_proc = None
+    _terminate_popen_process(proc)
+
+
+def _spawn_tracked_external_player(args: list[str], **popen_kw: object) -> subprocess.Popen:
+    """Launch one external player; replaces any previous player process we started."""
+    global _external_player_proc
+    with _external_player_lock:
+        prev = _external_player_proc
+        _external_player_proc = None
+    _terminate_popen_process(prev)
+    proc = subprocess.Popen(args, **popen_kw)
+    with _external_player_lock:
+        _external_player_proc = proc
+    return proc
+
+
+def _default_player_popen_kw() -> dict:
+    kw: dict = {"stdin": subprocess.DEVNULL}
+    if os.name != "nt":
+        kw["start_new_session"] = True
+    return kw
+
+
 def play_media_file(path: Path) -> None:
     p = path.expanduser().resolve()
     if not p.is_file():
@@ -279,16 +349,16 @@ def play_media_file(path: Path) -> None:
     cmd = get_audio_player_command() if _is_audio_file(p) else get_video_player_command()
     if not cmd:
         if sys.platform == "darwin":
-            subprocess.Popen(["open", str(p)])
+            _spawn_tracked_external_player(["open", str(p)], **_default_player_popen_kw())
         elif sys.platform == "win32":
             os.startfile(str(p))  # type: ignore[attr-defined]
         else:
-            subprocess.Popen(["xdg-open", str(p)])
+            _spawn_tracked_external_player(["xdg-open", str(p)], **_default_player_popen_kw())
         return
     argv = shlex.split(cmd, posix=os.name != "nt")
     if not argv:
         raise ValueError("Player command is empty.")
-    subprocess.Popen([*argv, str(p)])
+    _spawn_tracked_external_player([*argv, str(p)], **_default_player_popen_kw())
 
 
 def _write_temp_m3u_playlist(paths: list[Path]) -> Path:
@@ -345,17 +415,17 @@ def play_media_files(paths: list[Path]) -> None:
     cmd = get_audio_player_command() if all_audio else get_video_player_command()
     if not cmd:
         if sys.platform == "darwin":
-            subprocess.Popen(["open", pl_str])
+            _spawn_tracked_external_player(["open", pl_str], **_default_player_popen_kw())
         elif sys.platform == "win32":
             os.startfile(pl_str)  # type: ignore[attr-defined]
         else:
-            subprocess.Popen(["xdg-open", pl_str])
+            _spawn_tracked_external_player(["xdg-open", pl_str], **_default_player_popen_kw())
         return
 
     argv = shlex.split(cmd, posix=os.name != "nt")
     if not argv:
         raise ValueError("Player command is empty.")
-    subprocess.Popen([*argv, pl_str])
+    _spawn_tracked_external_player([*argv, pl_str], **_default_player_popen_kw())
 
 
 def _resolve_external_player_argv_for_stream() -> list[str] | None:
@@ -446,7 +516,7 @@ def play_stream_urls(urls: list[str]) -> None:
     popen_kw: dict = {"stdin": subprocess.DEVNULL}
     if os.name != "nt":
         popen_kw["start_new_session"] = True
-    subprocess.Popen([*argv, target], **popen_kw)
+    _spawn_tracked_external_player([*argv, target], **popen_kw)
 
 
 def remote_stream_urls_for_app_player(urls: list[str], host: str = "127.0.0.1") -> list[str]:
@@ -497,14 +567,92 @@ _TAB_GRADIENT = ft.LinearGradient(
     colors=["#151d2e", "#0d1422", "#121c30"],
 )
 
+# Embedded flet-video (media_kit): keep height stable; avoid scroll/clip around Video on Linux (gray texture).
+PLAYER_SURFACE_HEIGHT = 360
+
+
+def _run_minimal_player_mode(page: ft.Page) -> bool:
+    if os.environ.get("DLPULSE_MINIMAL_PLAYER") != "1":
+        return False
+
+    page.title = "DLPulse Minimal Video Test"
+    page.theme_mode = ft.ThemeMode.DARK
+    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+    page.vertical_alignment = ft.MainAxisAlignment.CENTER
+
+    def _on_page_error(e: ft.ControlEvent) -> None:
+        _player_debug(f"minimal page error: {e.data}")
+
+    def _on_video_error(e: ft.ControlEvent) -> None:
+        _player_debug(f"minimal video error: {e.data}")
+
+    page.on_error = _on_page_error
+    if Video is None or VideoMedia is None:
+        page.add(ft.Text("flet-video is unavailable.", color=ft.Colors.AMBER_200))
+        return True
+
+    filename = "Alphaville - Sounds Like A Melody (remastered 2020).mp4"
+    candidates = [
+        Path(os.environ.get("DLPULSE_MINIMAL_PLAYER_PATH", "")).expanduser(),
+        Path.cwd() / "assets" / filename,
+        Path.home() / "Music" / filename,
+    ]
+    video_path = next((p.resolve() for p in candidates if str(p) and p.is_file()), None)
+    if video_path is None:
+        page.add(
+            ft.Text(
+                "Set DLPULSE_MINIMAL_PLAYER_PATH to an existing MP4 file.",
+                color=ft.Colors.AMBER_200,
+            )
+        )
+        _player_debug("minimal player: no MP4 file found")
+        return True
+
+    _player_debug(f"minimal player loading: {video_path}")
+    video = Video(
+        expand=True,
+        playlist=[VideoMedia(str(video_path))],
+        fill_color=ft.Colors.BLACK,
+        aspect_ratio=16 / 9,
+        volume=100,
+        autoplay=False,
+        muted=False,
+        on_error=_on_video_error,
+    )
+    playing = {"value": False}
+
+    def _toggle_play(_: ft.ControlEvent) -> None:
+        try:
+            if playing["value"]:
+                video.pause()
+                playing["value"] = False
+                play_btn.icon = ft.Icons.PLAY_ARROW
+            else:
+                video.play()
+                playing["value"] = True
+                play_btn.icon = ft.Icons.PAUSE
+            page.update()
+        except Exception as ex:
+            _player_debug(f"minimal play/pause failed: {type(ex).__name__}: {ex}")
+
+    play_btn = ft.IconButton(icon=ft.Icons.PLAY_ARROW, icon_size=40, on_click=_toggle_play)
+    page.add(video, ft.Row([play_btn], alignment=ft.MainAxisAlignment.CENTER))
+    _player_debug("minimal player UI mounted")
+    return True
+
 
 def main(page: ft.Page) -> None:
+    if _run_minimal_player_mode(page):
+        return
+
     page.title = "DLPulse"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#070b12"
     page.padding = 16
-    page.window.min_width = 520
-    page.window.min_height = 400
+    page.window.width = 1280
+    page.window.height = 820
+    page.window.min_width = 960
+    page.window.min_height = 640
     page.theme = ft.Theme(
         color_scheme=ft.ColorScheme(
             primary=ft.Colors.TEAL_300,
@@ -518,6 +666,9 @@ def main(page: ft.Page) -> None:
             surface_container_highest=ft.Colors.GREY_800,
         ),
     )
+
+    page.on_disconnect = lambda _e: _terminate_tracked_external_player()
+    page.on_close = lambda _e: _terminate_tracked_external_player()
 
     st = SimpleNamespace()
     st.search_hits: list[dict] = []
@@ -541,10 +692,13 @@ def main(page: ft.Page) -> None:
     st.player_ready: bool = False
     st.player_wait_token: int = 0
     st.player_video = None
+    st.player_autoplay_after_load: bool = False
     st.active_result_kind: str = "none"
     # Which sites were queried for the last keyword search (for result row labels).
     st.last_search_sources: frozenset[str] = frozenset()
-    st.main_tabs: ft.Tabs | None = None
+    st.main_nav_bar: ft.NavigationBar | None = None
+    st.main_tab_body: ft.Container | None = None
+    st.main_tab_panels: list[ft.Control] | None = None
     st.library_loaded_once: bool = False
     # Search & Download: optional session folder (None = always use Settings path).
     st.search_session_dir: Path | None = None
@@ -818,6 +972,12 @@ def main(page: ft.Page) -> None:
         label="Keywords (search) or paste a URL (YouTube, SoundCloud, playlist, …)",
         expand=True,
         autofocus=True,
+        filled=True,
+        bgcolor=ft.Colors.with_opacity(0.35, ft.Colors.BLACK),
+        border_color=ft.Colors.TEAL_400,
+        border_width=2,
+        focused_border_width=2,
+        focused_border_color=ft.Colors.TEAL_200,
         # Room for the floating label so it is not clipped by the tab bar / divider when the layout is tight.
         content_padding=ft.Padding.only(left=12, right=12, top=16, bottom=12),
     )
@@ -1173,7 +1333,13 @@ def main(page: ft.Page) -> None:
 
     btn_clear_search_session.on_click = lambda e: asyncio.create_task(on_clear_search_session(e))
 
-    lib_list = ft.ListView(spacing=0, padding=0, height=272, auto_scroll=True)
+    lib_list = ft.ListView(
+        spacing=0,
+        padding=0,
+        height=272,
+        auto_scroll=False,
+        scroll=ft.ScrollMode.ALWAYS,
+    )
     lib_sel_hint = ft.Text(
         "No files selected. Tick rows or use Select all — order top to bottom is the playlist order.",
         size=12,
@@ -1540,14 +1706,6 @@ def main(page: ft.Page) -> None:
     def _selected_library_items() -> list[tuple[str, Path]]:
         return [st.lib_rows[i] for i, cb in enumerate(lib_checks) if cb.value and i < len(st.lib_rows)]
 
-    async def on_open_player(_: ft.ControlEvent) -> None:
-        items = _selected_library_items()
-        if not items:
-            set_status("Select one or more files for the app player.")
-            page.update()
-            return
-        await load_player_items(items)
-
     async def on_play(_: ft.ControlEvent) -> None:
         items = _selected_library_items()
         if not items:
@@ -1600,8 +1758,7 @@ def main(page: ft.Page) -> None:
         rebuild_cast_list()
         update_cast_stream_urls()
         lib_cast_hint.value = "Chromecast tab — tick one or more devices, then Start casting."
-        if st.main_tabs is not None:
-            st.main_tabs.selected_index = 3
+        await activate_main_tab(3)
         if len(sel) > 1:
             set_status("Casting the first selected file — tick Chromecast device(s) in the Cast tab.")
         else:
@@ -1614,7 +1771,6 @@ def main(page: ft.Page) -> None:
     btn_lib_ref = ft.Button(content="Refresh list", icon=ft.Icons.REFRESH, on_click=on_lib_ref)
     btn_lib_open = ft.OutlinedButton("Browse folder", icon=ft.Icons.FOLDER_OPEN, on_click=on_lib_open)
     btn_play = ft.FilledButton(content="Play", icon=ft.Icons.PLAY_ARROW, on_click=on_play)
-    btn_player_open = ft.OutlinedButton("Open Player tab", icon=ft.Icons.PLAY_CIRCLE, on_click=on_open_player)
     btn_ren = ft.Button(content="Rename", icon=ft.Icons.DRIVE_FILE_RENAME_OUTLINE, on_click=on_rename)
     btn_del = ft.Button(content="Delete", icon=ft.Icons.DELETE_OUTLINE, color=ft.Colors.RED, on_click=on_del)
     btn_cast_prep = ft.Button(
@@ -1972,7 +2128,10 @@ def main(page: ft.Page) -> None:
 
     player_title = ft.Text("No media loaded", size=15, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_100)
     player_hint = ft.Text(
-        "Select files in Library or Search results, then press Play. The embedded player uses flet-video/media_kit.",
+        "Încarcă din Library sau din rezultatele Search, apoi Play. "
+        "Controale: redare/pauză, stop, anterior/următor, repetare (fără / tot playlist-ul / piesa curentă), "
+        "shuffle pe playlist, volum, Chromecast, ecran complet, ✕ golește viewerul (playlistul rămâne). "
+        "Dacă zona video rămâne gri: Settings → „External player” → Salvează (recomandat pe Linux).",
         size=11,
         color=ft.Colors.GREY_500,
     )
@@ -2011,7 +2170,25 @@ def main(page: ft.Page) -> None:
             btn_player_play_pause.icon = ft.Icons.PAUSE
             btn_player_play_pause.content = "Pause"
             set_status("Playing in the app player.")
+            video = getattr(st, "player_video", None)
+            if video is not None and getattr(st, "player_autoplay_after_load", False):
+                st.player_autoplay_after_load = False
+                try:
+                    await asyncio.sleep(0.12)
+                    await video.play()
+                    _player_debug("play command sent after on_load")
+                except Exception as e:
+                    _player_debug(f"post-load play failed: {type(e).__name__}: {e}")
         page.update()
+
+        async def _repaint_after_video_load() -> None:
+            await asyncio.sleep(0.2)
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        page.run_task(_repaint_after_video_load)
 
     def _make_player_video(playlist: list | None = None, *, autoplay: bool = False) -> ft.Control:
         if Video is None:
@@ -2026,19 +2203,63 @@ def main(page: ft.Page) -> None:
                     size=13,
                 ),
             )
-        return Video(
+        import warnings as _w
+
+        async def _on_video_enter_fullscreen(_: ft.ControlEvent) -> None:
+            btn_player_fullscreen.icon = ft.Icons.FULLSCREEN_EXIT
+            btn_player_fullscreen.tooltip = "Ieșire din ecran complet"
+            page.update()
+
+        async def _on_video_exit_fullscreen(_: ft.ControlEvent) -> None:
+            btn_player_fullscreen.icon = ft.Icons.FULLSCREEN
+            btn_player_fullscreen.tooltip = "Ecran complet"
+            page.update()
+
+        # Match vd.py: no VideoConfiguration — let media_kit pick defaults (forced hwdec/vo
+        # was counterproductive on some Intel/X11 setups).
+        common = dict(
             playlist=playlist or [],
             autoplay=autoplay,
-            show_controls=True,
             expand=True,
-            volume=float(player_volume_slider.value or 85),
-            fit=ft.BoxFit.CONTAIN,
+            height=PLAYER_SURFACE_HEIGHT,
             fill_color=ft.Colors.BLACK,
-            playlist_mode=(PlaylistMode.NONE if PlaylistMode is not None else None),
-            shuffle_playlist=bool(st.player_shuffle),
+            aspect_ratio=16 / 9,
+            volume=float(player_volume_slider.value or 85),
+            muted=False,
             on_load=on_player_loaded,
             on_track_change=on_player_track_change,
             on_error=on_player_error,
+            on_enter_fullscreen=_on_video_enter_fullscreen,
+            on_exit_fullscreen=_on_video_exit_fullscreen,
+        )
+        # show_controls was deprecated in flet-video 0.85 (use controls=None to hide).
+        # Try the new API first; fall back to the old keyword for 0.84.x.
+        try:
+            with _w.catch_warnings():
+                _w.simplefilter("ignore", DeprecationWarning)
+                return Video(**common, show_controls=True)
+        except TypeError:
+            # flet-video ≥ 0.85 removed the keyword entirely
+            return Video(**common)
+
+    def _make_player_placeholder(message: str) -> ft.Control:
+        return ft.Container(
+            expand=True,
+            alignment=ft.Alignment.CENTER,
+            bgcolor=ft.Colors.BLACK,
+            border_radius=10,
+            padding=18,
+            content=ft.Text(
+                message,
+                color=ft.Colors.GREY_400,
+                size=13,
+                text_align=ft.TextAlign.CENTER,
+            ),
+        )
+
+    def _make_external_player_placeholder() -> ft.Control:
+        return _make_player_placeholder(
+            "External playback is enabled. Search/Library Play opens mpv instead of the internal video renderer."
         )
 
     def _player_timeout_hint(e: Exception) -> str:
@@ -2064,21 +2285,31 @@ def main(page: ft.Page) -> None:
         btn_player_play_pause.icon = ft.Icons.PAUSE
         btn_player_play_pause.content = "Loading..."
         set_status("Loading player...")
+        await activate_main_tab(2)
+        st.player_video = None
+        player_surface.content = _make_player_placeholder("Loading internal video player…")
+        page.update()
+        await asyncio.sleep(0.18)
 
         try:
             _player_debug(f"mounting Video widget with playlist ({len(playlist)} item(s), autoplay=True)")
+            st.player_autoplay_after_load = True
             new_video = _make_player_video(playlist, autoplay=True)
             st.player_video = new_video
-            _apply_player_repeat_mode()
-            new_video.shuffle_playlist = bool(st.player_shuffle)
             player_surface.content = new_video
+            new_video.shuffle_playlist = bool(st.player_shuffle)
+            _apply_player_repeat_mode()
             btn_player_play_pause.icon = ft.Icons.PAUSE
             btn_player_play_pause.content = "Pause"
-            set_status("Loading player...")
+            set_status("Loading player…")
         except Exception as e:
             st.player_ready = False
+            st.player_video = None
             btn_player_play_pause.icon = ft.Icons.PLAY_ARROW
             btn_player_play_pause.content = "Play"
+            player_surface.content = _make_player_placeholder(
+                "Player failed to start. Try again or switch to external playback in Settings."
+            )
             set_status(f"Player error: {_player_timeout_hint(e)}")
             _player_debug(f"player exception: {type(e).__name__}: {e}")
         page.update()
@@ -2120,8 +2351,7 @@ def main(page: ft.Page) -> None:
         player_title.value = str(clean[0]["title"])
         player_hint.value = f"{len(clean)} file(s) loaded in the app player."
         _refresh_player_playlist()
-        if st.main_tabs is not None:
-            st.main_tabs.selected_index = 2
+        await activate_main_tab(2)
         await _load_playlist_into_player(playlist)
         page.update()
 
@@ -2168,8 +2398,7 @@ def main(page: ft.Page) -> None:
         player_title.value = str(clean[0]["title"])
         player_hint.value = f"{len(clean)} stream(s) loaded in the app player."
         _refresh_player_playlist()
-        if st.main_tabs is not None:
-            st.main_tabs.selected_index = 2
+        await activate_main_tab(2)
         await _load_playlist_into_player(playlist)
         page.update()
 
@@ -2179,6 +2408,13 @@ def main(page: ft.Page) -> None:
             page.update()
             return
         video = getattr(st, "player_video", None)
+        if video is None and use_internal_player() and VideoMedia is not None:
+            pl = [
+                VideoMedia(resource=str(item["resource"]), extras={"title": str(item["title"])})
+                for item in st.player_items
+            ]
+            await _load_playlist_into_player(pl)
+            return
         if video is None or not st.player_ready:
             set_status("Player is still loading. Try again in a moment.")
             page.update()
@@ -2266,6 +2502,23 @@ def main(page: ft.Page) -> None:
             video.shuffle_playlist = bool(st.player_shuffle)
         page.update()
 
+    async def on_player_fullscreen(_: ft.ControlEvent) -> None:
+        if Video is None or not st.player_items:
+            set_status("Încarcă conținut în Player mai întâi.")
+            page.update()
+            return
+        video = getattr(st, "player_video", None)
+        if video is None or not st.player_ready:
+            set_status("Playerul se încarcă. Încearcă din nou.")
+            page.update()
+            return
+        try:
+            fs = bool(getattr(video, "fullscreen", False))
+            video.fullscreen = not fs
+        except Exception as e:
+            set_status(f"Ecran complet: {e}")
+        page.update()
+
     async def on_player_volume(e: ft.ControlEvent) -> None:
         if Video is None:
             return
@@ -2322,8 +2575,7 @@ def main(page: ft.Page) -> None:
             st.cast_devices = await asyncio.to_thread(discover_chromecasts, w)
         rebuild_cast_list()
         update_cast_stream_urls()
-        if st.main_tabs is not None:
-            st.main_tabs.selected_index = 3
+        await activate_main_tab(3)
         set_status(f"Ready to cast: {media_name}. Tick a device, then Start casting.")
         page.update()
 
@@ -2349,6 +2601,12 @@ def main(page: ft.Page) -> None:
     btn_player_next = ft.IconButton(icon=ft.Icons.SKIP_NEXT, tooltip="Next", on_click=on_player_next)
     btn_player_repeat = ft.OutlinedButton("Repeat: off", icon=ft.Icons.REPEAT, on_click=on_player_repeat)
     btn_player_shuffle = ft.OutlinedButton("Shuffle: off", icon=ft.Icons.SHUFFLE, on_click=on_player_shuffle)
+    btn_player_fullscreen = ft.IconButton(
+        icon=ft.Icons.FULLSCREEN,
+        tooltip="Ecran complet",
+        visible=use_internal_player(),
+        on_click=on_player_fullscreen,
+    )
     btn_player_cast = ft.FilledButton("Chromecast", icon=ft.Icons.CAST_CONNECTED, on_click=on_player_cast)
     player_volume_slider = ft.Slider(
         min=0,
@@ -2360,14 +2618,46 @@ def main(page: ft.Page) -> None:
         on_change_end=on_player_volume,
     )
 
-    st.player_video = _make_player_video([], autoplay=False)
     player_surface = ft.Container(
-        content=st.player_video,
-        height=360,
+        content=(
+            _make_player_placeholder("Select files or search results, then press Play to load the internal player.")
+            if use_internal_player()
+            else _make_external_player_placeholder()
+        ),
+        height=PLAYER_SURFACE_HEIGHT,
         bgcolor=ft.Colors.BLACK,
-        border=ft.Border.all(1, ft.Colors.GREY_700),
-        border_radius=10,
-        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+    )
+
+    async def on_clear_player_viewer(_: ft.ControlEvent) -> None:
+        vid = getattr(st, "player_video", None)
+        if vid is not None:
+            try:
+                vid.fullscreen = False
+            except Exception:
+                pass
+            try:
+                await vid.pause()
+            except Exception:
+                pass
+        st.player_video = None
+        st.player_ready = False
+        btn_player_fullscreen.icon = ft.Icons.FULLSCREEN
+        btn_player_fullscreen.tooltip = "Ecran complet"
+        player_surface.content = (
+            _make_player_placeholder("Select files or search results, then press Play to load the internal player.")
+            if use_internal_player()
+            else _make_external_player_placeholder()
+        )
+        btn_player_play_pause.icon = ft.Icons.PLAY_ARROW
+        btn_player_play_pause.content = "Play"
+        page.update()
+
+    btn_player_clear_viewer = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        tooltip="Unload video from this tab (playlist stays; press Play to show again)",
+        icon_color=ft.Colors.GREY_400,
+        visible=use_internal_player(),
+        on_click=on_clear_player_viewer,
     )
 
     async def on_search_download_to_folder(e: ft.ControlEvent) -> None:
@@ -2485,7 +2775,6 @@ def main(page: ft.Page) -> None:
                         lib_cb_all,
                         btn_lib_ref,
                         btn_play,
-                        btn_player_open,
                         btn_ren,
                         btn_del,
                         btn_cast_prep,
@@ -2518,59 +2807,51 @@ def main(page: ft.Page) -> None:
         expand=True,
     )
 
-    tab_player = ft.Container(
-        content=ft.Column(
-            [
-                ft.Row(
-                    [
-                        ft.Column([player_title, player_hint], spacing=3, tight=True, expand=True),
-                        btn_player_cast,
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    wrap=True,
-                ),
-                player_surface,
-                ft.Row(
-                    [
-                        btn_player_prev,
-                        btn_player_play_pause,
-                        btn_player_stop,
-                        btn_player_next,
-                        btn_player_repeat,
-                        btn_player_shuffle,
-                    ],
-                    wrap=True,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                ft.Row(
-                    [
-                        ft.Icon(ft.Icons.VOLUME_UP, size=18, color=ft.Colors.GREY_500),
-                        player_volume_slider,
-                    ],
-                    wrap=True,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                ft.Text("Playlist", weight=ft.FontWeight.W_600, size=13, color=ft.Colors.GREY_300),
-                ft.Container(
-                    content=player_playlist,
-                    height=110,
-                    bgcolor=ft.Colors.with_opacity(0.24, ft.Colors.BLACK),
-                    border=ft.Border.all(1, ft.Colors.GREY_800),
-                    border_radius=8,
-                    padding=8,
-                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
-                ),
-            ],
-            spacing=10,
-            scroll=ft.ScrollMode.AUTO,
-            expand=True,
-        ),
+    tab_player = ft.Column(
+        [
+            ft.Row(
+                [
+                    ft.Column([player_title, player_hint], spacing=3, tight=True, expand=True),
+                    btn_player_clear_viewer,
+                    btn_player_fullscreen,
+                    btn_player_cast,
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=True,
+            ),
+            player_surface,
+            ft.Row(
+                [
+                    btn_player_prev,
+                    btn_player_play_pause,
+                    btn_player_stop,
+                    btn_player_next,
+                    btn_player_repeat,
+                    btn_player_shuffle,
+                ],
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ft.Row(
+                [
+                    ft.Icon(ft.Icons.VOLUME_UP, size=18, color=ft.Colors.GREY_500),
+                    player_volume_slider,
+                ],
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ft.Text("Playlist", weight=ft.FontWeight.W_600, size=13, color=ft.Colors.GREY_300),
+            ft.Container(
+                content=player_playlist,
+                height=110,
+                bgcolor=ft.Colors.with_opacity(0.24, ft.Colors.BLACK),
+                border=ft.Border.all(1, ft.Colors.GREY_800),
+                padding=8,
+            ),
+        ],
+        spacing=10,
         expand=True,
-        padding=14,
-        gradient=_TAB_GRADIENT,
-        border_radius=14,
-        shadow=_TAB_PANEL_SHADOW,
     )
 
     cast_panel_left = ft.Container(
@@ -2789,6 +3070,22 @@ def main(page: ft.Page) -> None:
         set_audio_player_command(tf_audio_player.value or "")
         set_video_player_command(tf_video_player.value or "")
         set_playback_mode(str(dd_playback_mode.value or "external"))
+        if not use_internal_player():
+            vid = getattr(st, "player_video", None)
+            if vid is not None:
+                try:
+                    await vid.pause()
+                except Exception:
+                    pass
+            st.player_video = None
+            st.player_ready = False
+            player_surface.content = _make_external_player_placeholder()
+            btn_player_play_pause.icon = ft.Icons.PLAY_ARROW
+            btn_player_play_pause.content = "Play"
+            btn_player_fullscreen.icon = ft.Icons.FULLSCREEN
+            btn_player_fullscreen.tooltip = "Ecran complet"
+        btn_player_clear_viewer.visible = use_internal_player()
+        btn_player_fullscreen.visible = use_internal_player()
         try:
             w = float((tf_cast_disc_wait.value or "3").strip())
             set_cast_discovery_wait_s(w)
@@ -2804,93 +3101,142 @@ def main(page: ft.Page) -> None:
             refresh_settings_tab()
         page.update()
 
+    btn_settings_save = ft.FilledButton("Save settings", icon=ft.Icons.SAVE, on_click=on_save_player_settings)
+    btn_settings_refresh = ft.OutlinedButton("Refresh info", icon=ft.Icons.REFRESH, on_click=on_refresh_settings_info)
+
+    _settings_scroll_body = ft.Column(
+        [
+            ft.Text("Settings", weight=ft.FontWeight.BOLD, size=20, color=ft.Colors.GREY_200),
+            ft.Text(
+                "Configure downloads, Chromecast discovery, and local playback. One Save applies everything below.",
+                size=11,
+                color=ft.Colors.GREY_500,
+            ),
+            ft.Container(height=4),
+            # — Downloads
+            ft.Text("Downloads", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
+            ft.Text(
+                "Folder used for new files from Search & Download. Changing it does not affect Library “Browse” view.",
+                size=11,
+                color=ft.Colors.GREY_500,
+            ),
+            ft.Row(
+                controls=[tf_save_root, btn_browse_save, btn_apply_save],
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            ft.Divider(height=1, color=ft.Colors.with_opacity(0.35, ft.Colors.GREY_600)),
+            # — Chromecast
+            ft.Text("Chromecast", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
+            ft.Text(
+                "How long to wait when scanning the network for Cast devices (Discover / Prepare for Cast).",
+                size=11,
+                color=ft.Colors.GREY_500,
+            ),
+            tf_cast_disc_wait,
+            ft.Divider(height=1, color=ft.Colors.with_opacity(0.35, ft.Colors.GREY_600)),
+            # — Local playback
+            ft.Container(
+                padding=ft.Padding.all(12),
+                border_radius=10,
+                bgcolor=ft.Colors.with_opacity(0.18, ft.Colors.AMBER_900),
+                border=ft.Border.all(1, ft.Colors.AMBER_400),
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.WARNING_AMBER, color=ft.Colors.AMBER_200, size=22),
+                        ft.Text(
+                            "If the video area stays gray, use External player and save.",
+                            size=12,
+                            color=ft.Colors.GREY_200,
+                            expand=True,
+                        ),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+            ft.Text("Playback on this PC", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
+            ft.Text(
+                "Choose whether Play uses the app player or an external player. "
+                "On Linux, the internal video renderer can hit a media_kit/Flutter EGL bug, so external is recommended.",
+                size=11,
+                color=ft.Colors.GREY_500,
+            ),
+            dd_playback_mode,
+            ft.Text(
+                "External player commands. Leave empty for the system default. "
+                "Multiple selected files or streams open as one temporary playlist.",
+                size=11,
+                color=ft.Colors.GREY_500,
+            ),
+            tf_audio_player,
+            tf_video_player,
+            ft.Divider(height=1, color=ft.Colors.with_opacity(0.35, ft.Colors.GREY_600)),
+            ft.Text("About", weight=ft.FontWeight.W_600, size=14, color=ft.Colors.GREY_300),
+            settings_info_txt,
+            ft.Text(
+                "yt-dlp: the app checks PyPI automatically from time to time. "
+                "You can also press “Check for yt-dlp updates” anytime; if a newer version exists, "
+                "use “Update yt-dlp” (runs pip in this Python environment).",
+                size=11,
+                color=ft.Colors.GREY_500,
+            ),
+            ft.Row(
+                [btn_check_ytdlp_updates, btn_ytdlp_update],
+                spacing=10,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ytdlp_update_msg,
+        ],
+        spacing=10,
+        tight=True,
+        expand=True,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
     tab_settings = ft.Container(
         content=ft.Column(
             [
-                ft.Text("Settings", weight=ft.FontWeight.BOLD, size=20, color=ft.Colors.GREY_200),
-                ft.Text(
-                    "Configure downloads, Chromecast discovery, and local playback. One Save applies everything below.",
-                    size=11,
-                    color=ft.Colors.GREY_500,
+                _settings_scroll_body,
+                ft.Container(
+                    content=ft.Row(
+                        [btn_settings_save, btn_settings_refresh],
+                        wrap=True,
+                        alignment=ft.MainAxisAlignment.END,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    padding=ft.Padding.symmetric(horizontal=14, vertical=12),
+                    bgcolor=ft.Colors.with_opacity(0.94, "#0d1117"),
+                    border=ft.Border(top=ft.BorderSide(1, ft.Colors.GREY_700)),
+                    shadow=ft.BoxShadow(
+                        blur_radius=18,
+                        spread_radius=0,
+                        offset=ft.Offset(0, -4),
+                        color=ft.Colors.with_opacity(0.45, ft.Colors.BLACK),
+                    ),
                 ),
-                ft.Container(height=4),
-                # — Downloads
-                ft.Text("Downloads", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
-                ft.Text(
-                    "Folder used for new files from Search & Download. Changing it does not affect Library “Browse” view.",
-                    size=11,
-                    color=ft.Colors.GREY_500,
-                ),
-                ft.Row(
-                    controls=[tf_save_root, btn_browse_save, btn_apply_save],
-                    wrap=True,
-                    vertical_alignment=ft.CrossAxisAlignment.START,
-                ),
-                ft.Divider(height=1, color=ft.Colors.with_opacity(0.35, ft.Colors.GREY_600)),
-                # — Chromecast
-                ft.Text("Chromecast", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
-                ft.Text(
-                    "How long to wait when scanning the network for Cast devices (Discover / Prepare for Cast).",
-                    size=11,
-                    color=ft.Colors.GREY_500,
-                ),
-                tf_cast_disc_wait,
-                ft.Divider(height=1, color=ft.Colors.with_opacity(0.35, ft.Colors.GREY_600)),
-                # — Local playback
-                ft.Text("Playback on this PC", weight=ft.FontWeight.W_600, size=15, color=ft.Colors.TEAL_200),
-                ft.Text(
-                    "Choose whether Play uses the app player or an external player. "
-                    "On Linux, the internal video renderer can hit a media_kit/Flutter EGL bug, so external is recommended.",
-                    size=11,
-                    color=ft.Colors.GREY_500,
-                ),
-                dd_playback_mode,
-                ft.Text(
-                    "External player commands. Leave empty for the system default. "
-                    "Multiple selected files or streams open as one temporary playlist.",
-                    size=11,
-                    color=ft.Colors.GREY_500,
-                ),
-                tf_audio_player,
-                tf_video_player,
-                ft.Row(
-                    [
-                        ft.FilledButton("Save settings", icon=ft.Icons.SAVE, on_click=on_save_player_settings),
-                        ft.OutlinedButton("Refresh info", icon=ft.Icons.REFRESH, on_click=on_refresh_settings_info),
-                    ],
-                    wrap=True,
-                ),
-                ft.Divider(height=1, color=ft.Colors.with_opacity(0.35, ft.Colors.GREY_600)),
-                ft.Text("About", weight=ft.FontWeight.W_600, size=14, color=ft.Colors.GREY_300),
-                settings_info_txt,
-                ft.Text(
-                    "yt-dlp: the app checks PyPI automatically from time to time. "
-                    "You can also press “Check for yt-dlp updates” anytime; if a newer version exists, "
-                    "use “Update yt-dlp” (runs pip in this Python environment).",
-                    size=11,
-                    color=ft.Colors.GREY_500,
-                ),
-                ft.Row(
-                    [btn_check_ytdlp_updates, btn_ytdlp_update],
-                    spacing=10,
-                    wrap=True,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                ytdlp_update_msg,
             ],
-            spacing=10,
-            scroll=ft.ScrollMode.AUTO,
-            tight=True,
+            spacing=0,
+            expand=True,
         ),
         expand=True,
         padding=18,
         gradient=_TAB_GRADIENT,
         border_radius=14,
         shadow=_TAB_PANEL_SHADOW,
+        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
     )
 
     _DONATE_BMC_URL = "https://buymeacoffee.com/medcodex"
     _QR_COFFEE_PATH = Path(__file__).resolve().parent / "cofe.png"
+    _DONATE_BTC = "bc1q8gv3zue7wtem279rqz7rj405qftpu9855k2l2s"
+    _yt_root_for_donate = Path(__file__).resolve().parent.parent
+    _QR_BTC_PATH: Path | None = None
+    for _btc_name in ("BTC.jpeg", "BTC.jpg", "btc.jpeg"):
+        _p = _yt_root_for_donate / _btc_name
+        if _p.is_file():
+            _QR_BTC_PATH = _p
+            break
 
     async def on_open_donate_url(_: ft.ControlEvent) -> None:
         await page.launch_url(_DONATE_BMC_URL)
@@ -2916,8 +3262,6 @@ def main(page: ft.Page) -> None:
         icon=ft.Icons.LOCAL_CAFE,
         on_click=on_open_donate_url,
     )
-    # Vertical stack only: Row + expand inside a scrolling Column can get zero size in TabBarView.
-    _donate_qr_block: ft.Control
     if _QR_COFFEE_PATH.is_file():
         _donate_qr_block = ft.Container(
             content=ft.Image(
@@ -2930,7 +3274,6 @@ def main(page: ft.Page) -> None:
             padding=8,
             bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.WHITE),
             border_radius=12,
-            margin=ft.Margin.only(top=4),
         )
     else:
         _donate_qr_block = ft.Text(
@@ -2939,17 +3282,124 @@ def main(page: ft.Page) -> None:
             color=ft.Colors.AMBER_200,
         )
 
+    _donate_btc_hdr = ft.Text("Bitcoin (BTC)", weight=ft.FontWeight.W_600, size=14, color=ft.Colors.TEAL_200)
+    _donate_btc_txt = ft.Text(
+        _DONATE_BTC,
+        size=13,
+        color=ft.Colors.TEAL_100,
+        selectable=True,
+        font_family="monospace",
+    )
+    if _QR_BTC_PATH is not None:
+        _donate_btc_qr_block = ft.Container(
+            content=ft.Image(
+                src=str(_QR_BTC_PATH),
+                width=200,
+                height=200,
+                fit=ft.BoxFit.CONTAIN,
+                border_radius=8,
+            ),
+            padding=8,
+            bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.WHITE),
+            border_radius=12,
+        )
+    else:
+        _donate_btc_qr_block = ft.Text(
+            f"(BTC QR not found: add BTC.jpeg next to the flet_app folder, in {_yt_root_for_donate}/ )",
+            size=11,
+            color=ft.Colors.AMBER_200,
+        )
+
+    async def on_copy_btc_address(_: ft.ControlEvent) -> None:
+        try:
+            await page.clipboard.set(_DONATE_BTC)
+            set_status("BTC address copied to clipboard.")
+        except Exception as ex:
+            set_status(f"Copy failed: {ex}")
+        page.update()
+
+    def _on_copy_btc_click(_: ft.ControlEvent) -> None:
+        asyncio.create_task(on_copy_btc_address(_))
+
+    btn_copy_btc = ft.OutlinedButton(
+        "Copy",
+        icon=ft.Icons.CONTENT_COPY,
+        tooltip="Copy BTC address",
+        on_click=_on_copy_btc_click,
+    )
+
+    # Row + expand=True columns inside a scrolling Column can get zero height in this shell (empty grey panel).
+    _donate_col_w = 380
+    _donate_coffee_upper = ft.Container(
+        content=ft.Column(
+            [
+                _donate_link_hdr,
+                _donate_link_txt,
+                _donate_open_btn,
+            ],
+            spacing=10,
+            tight=True,
+            horizontal_alignment=ft.CrossAxisAlignment.START,
+        ),
+        width=_donate_col_w,
+        padding=ft.Padding.only(right=12),
+    )
+    _donate_btc_addr_row = ft.Row(
+        [
+            ft.Container(content=_donate_btc_txt, expand=True),
+            btn_copy_btc,
+        ],
+        spacing=8,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    _donate_btc_upper = ft.Container(
+        content=ft.Column(
+            [
+                _donate_btc_hdr,
+                _donate_btc_addr_row,
+            ],
+            spacing=10,
+            tight=True,
+            horizontal_alignment=ft.CrossAxisAlignment.START,
+        ),
+        width=_donate_col_w,
+        padding=ft.Padding.only(left=12),
+    )
+    _donate_qr_row = ft.Row(
+        [
+            ft.Container(
+                width=_donate_col_w,
+                padding=ft.Padding.only(right=12),
+                content=_donate_qr_block,
+            ),
+            ft.Container(
+                width=_donate_col_w,
+                padding=ft.Padding.only(left=12),
+                content=_donate_btc_qr_block,
+            ),
+        ],
+        spacing=24,
+        run_spacing=16,
+        wrap=True,
+        vertical_alignment=ft.CrossAxisAlignment.START,
+    )
+
     tab_donate = ft.Container(
         content=ft.Column(
             [
                 _donate_title,
                 _donate_blurb,
-                _donate_link_hdr,
-                _donate_link_txt,
-                _donate_open_btn,
-                _donate_qr_block,
+                ft.Row(
+                    [_donate_coffee_upper, _donate_btc_upper],
+                    wrap=True,
+                    spacing=24,
+                    run_spacing=20,
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                ),
+                _donate_qr_row,
             ],
-            spacing=10,
+            spacing=14,
             scroll=ft.ScrollMode.AUTO,
             tight=True,
         ),
@@ -3131,11 +3581,7 @@ def main(page: ft.Page) -> None:
         shadow=_TAB_PANEL_SHADOW,
     )
 
-    async def on_tabs_change(e: ft.ControlEvent) -> None:
-        try:
-            idx = int(e.control.selected_index)
-        except (TypeError, ValueError, AttributeError):
-            return
+    async def _main_tab_side_effects(idx: int) -> None:
         if idx == 1:
             if not st.library_loaded_once:
                 async with async_busy("Loading library tab (scanning folders)…"):
@@ -3148,47 +3594,66 @@ def main(page: ft.Page) -> None:
             refresh_settings_tab()
             page.update()
 
-    tabs = ft.Tabs(
-        length=8,
-        selected_index=0,
-        on_change=on_tabs_change,
-        content=ft.Column(
-            [
-                ft.TabBar(
-                    tabs=[
-                        ft.Tab(label="Search & Download", icon=ft.Icons.SEARCH),
-                        ft.Tab(label="Library", icon=ft.Icons.VIDEO_LIBRARY),
-                        ft.Tab(label="Player", icon=ft.Icons.PLAY_CIRCLE),
-                        ft.Tab(label="Chromecast", icon=ft.Icons.CAST),
-                        ft.Tab(label="Settings", icon=ft.Icons.SETTINGS),
-                        ft.Tab(label="Donate", icon=ft.Icons.VOLUNTEER_ACTIVISM),
-                        ft.Tab(label="Open source", icon=ft.Icons.GROUP_WORK),
-                        ft.Tab(label="About", icon=ft.Icons.INFO_OUTLINE),
-                    ],
-                    label_color=ft.Colors.GREY_100,
-                    unselected_label_color=ft.Colors.GREY_500,
-                    indicator_color=ft.Colors.TEAL_400,
-                    divider_color=ft.Colors.GREY_700,
-                ),
-                ft.TabBarView(
-                    controls=[
-                        tab_search_url,
-                        tab_lib,
-                        tab_player,
-                        tab_cast,
-                        tab_settings,
-                        tab_donate,
-                        tab_credits,
-                        tab_about_app,
-                    ],
-                    expand=True,
-                ),
-            ],
-            expand=True,
-        ),
+    _main_tab_panels_list: list[ft.Control] = [
+        tab_search_url,
+        tab_lib,
+        tab_player,
+        tab_cast,
+        tab_settings,
+        tab_donate,
+        tab_credits,
+        tab_about_app,
+    ]
+
+    main_tab_body = ft.Container(
         expand=True,
+        clip_behavior=ft.ClipBehavior.NONE,
+        content=_main_tab_panels_list[0],
     )
-    st.main_tabs = tabs
+
+    async def on_main_nav_change(e: ft.ControlEvent) -> None:
+        try:
+            idx = int(e.control.selected_index)
+        except (TypeError, ValueError, AttributeError):
+            return
+        main_tab_body.content = _main_tab_panels_list[idx]
+        await _main_tab_side_effects(idx)
+        page.update()
+
+    main_nav_bar = ft.NavigationBar(
+        destinations=[
+            ft.NavigationBarDestination(icon=ft.Icons.SEARCH, label="Search"),
+            ft.NavigationBarDestination(icon=ft.Icons.VIDEO_LIBRARY, label="Library"),
+            ft.NavigationBarDestination(icon=ft.Icons.PLAY_CIRCLE, label="Player"),
+            ft.NavigationBarDestination(icon=ft.Icons.CAST, label="Chromecast"),
+            ft.NavigationBarDestination(icon=ft.Icons.SETTINGS, label="Settings"),
+            ft.NavigationBarDestination(icon=ft.Icons.VOLUNTEER_ACTIVISM, label="Donate"),
+            ft.NavigationBarDestination(icon=ft.Icons.GROUP_WORK, label="Open source"),
+            ft.NavigationBarDestination(icon=ft.Icons.INFO_OUTLINE, label="About"),
+        ],
+        selected_index=0,
+        bgcolor=ft.Colors.with_opacity(0.35, ft.Colors.BLACK),
+        indicator_color=ft.Colors.TEAL_400,
+        on_change=on_main_nav_change,
+        label_behavior=ft.NavigationBarLabelBehavior.ONLY_SHOW_SELECTED,
+    )
+
+    main_nav_column = ft.Column(
+        [main_nav_bar, main_tab_body],
+        expand=True,
+        spacing=4,
+    )
+
+    async def activate_main_tab(idx: int) -> None:
+        if not (0 <= idx < len(_main_tab_panels_list)):
+            return
+        main_nav_bar.selected_index = idx
+        main_tab_body.content = _main_tab_panels_list[idx]
+        await _main_tab_side_effects(idx)
+
+    st.main_nav_bar = main_nav_bar
+    st.main_tab_body = main_tab_body
+    st.main_tab_panels = _main_tab_panels_list
 
     async def on_github_banner_open(_: ft.ControlEvent) -> None:
         await page.launch_url(GITHUB_PROJECT_URL)
@@ -3301,37 +3766,43 @@ def main(page: ft.Page) -> None:
         ),
     )
 
-    main_body = ft.Container(
-        content=ft.Column(
-            [
-                ft.Row(
-                    [
-                        ft.Text(
-                            "DLPulse",
-                            size=22,
-                            weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.GREY_100,
-                        ),
-                        ft.Column(
-                            [
-                                status,
-                                busy_row,
-                            ],
-                            tight=True,
-                            horizontal_alignment=ft.CrossAxisAlignment.END,
-                        ),
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                ),
-                github_update_banner,
-                dl_queue,
-                tabs,
-            ],
-            spacing=10,
-            expand=True,
-        ),
+    # media_kit paints to a GPU texture: a gradient *ancestor* (DecoratedBox + saveLayer)
+    # often breaks compositing → solid gray. Keep the page look with a background layer only.
+    _main_ui_column = ft.Column(
+        [
+            ft.Row(
+                [
+                    ft.Text(
+                        "DLPulse",
+                        size=22,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.GREY_100,
+                    ),
+                    ft.Column(
+                        [
+                            status,
+                            busy_row,
+                        ],
+                        tight=True,
+                        horizontal_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            github_update_banner,
+            dl_queue,
+            main_nav_column,
+        ],
+        spacing=10,
         expand=True,
-        gradient=_PAGE_GRADIENT,
+    )
+
+    main_body = ft.Stack(
+        expand=True,
+        controls=[
+            ft.Container(expand=True, gradient=_PAGE_GRADIENT),
+            ft.Container(expand=True, content=_main_ui_column),
+        ],
     )
 
     page.add(

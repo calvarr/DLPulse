@@ -816,8 +816,9 @@ def extract_single_http_stream_url(page_url: str) -> str | None:
         base_opts["cookiefile"] = cookiefile
 
     format_try = [
-        "best[vcodec!=none][acodec!=none][protocol^=http][protocol!=http_dash_segments][protocol!=m3u8_native]/best[vcodec!=none][acodec!=none]/18/22/best",
-        "best[vcodec!=none][acodec!=none]/best",
+        # Internal flet_video is most reliable with browser-friendly H.264/AAC.
+        "22/18/best[ext=mp4][vcodec^=avc1][acodec!=none][protocol^=http][protocol!=http_dash_segments][protocol!=m3u8_native]",
+        "best[ext=mp4][vcodec^=avc1][acodec!=none]/best[vcodec!=none][acodec!=none]",
         "best",
     ]
     for extra in (_youtube_opts_extra(), {}):
@@ -842,7 +843,7 @@ def extract_single_http_stream_url(page_url: str) -> str | None:
 
 
 def extract_split_video_audio_stream_urls(page_url: str) -> tuple[str, str] | None:
-    """For DASH: (video_url, audio_url). None if two streams are not available."""
+    """For DASH: (video_url, audio_url). Prefer H.264/AAC for the embedded player."""
     url = youtube_url_for_single_video_download(page_url)
     if not url:
         return None
@@ -854,7 +855,16 @@ def extract_split_video_audio_stream_urls(page_url: str) -> tuple[str, str] | No
         "ignoreerrors": False,
         "logger": _YtdlpQuietLogger(),
         "noplaylist": True,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio/bestvideo+ba/best",
+        "format": (
+            "bestvideo[ext=mp4][vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4][vcodec^=avc1][height<=480]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio/"
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4]+bestaudio/"
+            "bestvideo+bestaudio/"
+            "best"
+        ),
     }
     if cookiefile:
         base_opts["cookiefile"] = cookiefile

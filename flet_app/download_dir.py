@@ -128,14 +128,20 @@ def set_audio_player_command(cmd: str) -> None:
 
 
 def get_playback_mode() -> str:
-    mode = str(_read_settings().get("playback_mode") or "external").strip().lower()
-    return mode if mode in ("external", "internal") else "external"
+    data = _read_settings()
+    raw = data.get("playback_mode")
+    mode = ("" if raw is None else str(raw)).strip().lower()
+    linux = sys.platform.startswith("linux")
+    if mode in ("external", "internal"):
+        return mode
+    # No saved preference: on Linux default to external (mpv) — avoids media_kit gray texture on many X11 setups.
+    return "external" if linux else "internal"
 
 
 def set_playback_mode(mode: str) -> None:
     value = (mode or "").strip().lower()
     if value not in ("external", "internal"):
-        value = "external"
+        value = "external" if sys.platform.startswith("linux") else "internal"
     data = _read_settings()
     data["playback_mode"] = value
     if "download_dir" not in data:
