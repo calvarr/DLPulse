@@ -78,12 +78,9 @@ jobs:
           pip install -r desktop_tui/requirements.txt
 
       - name: Verify bundled ffmpeg dependency
+        # Use python -c (not a bash heredoc): Windows runners default to PowerShell, which does not support <<.
         run: |
-          python - <<'PY'
-          import imageio_ffmpeg
-          exe = imageio_ffmpeg.get_ffmpeg_exe()
-          print(f"Bundled ffmpeg from imageio-ffmpeg: {exe}")
-          PY
+          python -c "import imageio_ffmpeg as _i; _e=_i.get_ffmpeg_exe(); print('Bundled ffmpeg from imageio-ffmpeg:', _e)"
 
       - name: Ensure app icon (pyproject references flet_app/icon.png)
         run: |
