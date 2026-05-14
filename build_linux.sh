@@ -119,6 +119,11 @@ export FLET_DESKTOP_FLAVOR="${FLET_DESKTOP_FLAVOR:-full}"
 info "flet build linux …"
 "$FLET" build linux --yes "${EXTRA_ARGS[@]}"
 
+if [[ -f "$ROOT/packaging/linux/bundle_imageio_ffmpeg_into_linux_bundle.sh" ]]; then
+    info "Bundling imageio ffmpeg into build/linux/bin …"
+    bash "$ROOT/packaging/linux/bundle_imageio_ffmpeg_into_linux_bundle.sh" "$ROOT" || warn "Linux ffmpeg bundle step failed."
+fi
+
 BUILD_DIR="$ROOT/build/linux"
 info "Done → $BUILD_DIR"
 

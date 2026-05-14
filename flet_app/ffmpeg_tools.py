@@ -35,6 +35,12 @@ def _candidate_dirs() -> list[Path]:
 
     exe_dir = Path(sys.executable).resolve().parent
     module_dir = Path(__file__).resolve().parent
+    # PyInstaller / Flet one-folder: bundled data often under _MEIPASS.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        add(Path(meipass))
+        add(Path(meipass) / "bin")
+
     for base in (exe_dir, module_dir, module_dir.parent):
         add(base)
         add(base / "bin")
@@ -74,6 +80,9 @@ def _find_named_tool(name: str) -> str | None:
             candidate = directory / exe_name
             if _is_executable(candidate):
                 return str(candidate)
+            # macOS: Gatekeeper / copied bundle may lack the executable bit until codesign; still try.
+            if sys.platform == "darwin" and candidate.is_file() and not os.access(candidate, os.X_OK):
+                return str(candidate.resolve())
     found = shutil.which(name)
     return found
 
@@ -95,9 +104,11 @@ def find_ffmpeg() -> str | None:
         import imageio_ffmpeg
 
         imageio_exe = Path(imageio_ffmpeg.get_ffmpeg_exe())
-        if _is_executable(imageio_exe):
+        if _is_executable(imageio_exe) or (
+            sys.platform == "darwin" and imageio_exe.is_file() and not os.access(imageio_exe, os.X_OK)
+        ):
             os.environ.setdefault("IMAGEIO_FFMPEG_EXE", str(imageio_exe))
-            return str(imageio_exe)
+            return str(imageio_exe.resolve())
     except Exception:
         return None
     return None
@@ -108,5 +119,12 @@ def ffmpeg_available() -> bool:
 
 
 def ffmpeg_location_for_ytdlp() -> str | None:
-    """yt-dlp accepts either a directory or a concrete ffmpeg executable path."""
-    return find_ffmpeg()
+    """Directory containing ``ffmpeg`` (and ideally ``ffprobe``) for yt-dlp postprocessors."""
+    exe = find_ffmpeg()
+    if not exe:
+        return None
+    p = Path(exe).expanduser().resolve()
+    if p.is_dir():
+        return str(p)
+    # yt-dlp joins ``ffmpeg_location`` with ``ffmpeg`` / ``ffprobe`` — must be a directory.
+    return str(p.parent)

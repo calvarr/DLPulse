@@ -97,4 +97,12 @@ info "flet build macos …"
 export FLET_DESKTOP_FLAVOR="${FLET_DESKTOP_FLAVOR:-full}"
 "$FLET" build macos --yes "$@"
 
+export PYTHON="$VENV_PY"
+if bash "$ROOT/packaging/macos/bundle_ffmpeg_into_app.sh" "$ROOT"; then
+  info "Bundled ffmpeg/ffprobe into the macOS .app (see packaging/macos/bundle_ffmpeg_into_app.sh)."
+else
+  warn "ffmpeg bundle step failed — check that build/macos contains a .app after flet build."
+fi
+
 info "Done → $ROOT/build/macos/"
+info "Optional DMG: (cd \"$ROOT\" && bash packaging/macos/make_dmg.sh \"$ROOT\")"

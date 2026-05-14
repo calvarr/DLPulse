@@ -105,4 +105,11 @@ if ($fletCode -ne 0) {
     }
 }
 if ($fletCode -ne 0) { Err "flet build failed (exit code $fletCode)."; exit $fletCode }
+
+$bundle = Join-Path $Root "packaging\windows\bundle_ffmpeg_into_flet_release.ps1"
+if (Test-Path $bundle) {
+    Info "Bundling ffmpeg/ffprobe into runner\Release\bin …"
+    & $bundle $Root
+}
+
 Info "Done → $Root\build\windows\"

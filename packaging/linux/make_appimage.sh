@@ -4,6 +4,7 @@
 # - Else: assemble AppDir from the flat bundle under ``build/linux/``
 #   (binary + data/ + lib/ + …) and write ``build/DLPulse-x86_64.AppImage``.
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${1:-.}"
 cd "$ROOT"
 
@@ -77,14 +78,21 @@ EOS
   echo "Wrapped legacy AppRun so bundled usr/bin is on PATH."
 }
 
-if ! command -v appimagetool &>/dev/null; then
-  echo "appimagetool is not on PATH."
-  exit 1
-fi
-
 BUNDLE="build/linux"
 if [[ ! -d "$BUNDLE" ]]; then
   echo "Missing $BUNDLE — run first: flet build linux"
+  exit 1
+fi
+
+# Portable flat bundle + later AppDir: imageio ffmpeg under build/linux/bin (static johnvansickle still added below).
+if [[ -f "$SCRIPT_DIR/bundle_imageio_ffmpeg_into_linux_bundle.sh" ]]; then
+  bash "$SCRIPT_DIR/bundle_imageio_ffmpeg_into_linux_bundle.sh" "$ROOT" || {
+    echo "make_appimage: warning — imageio ffmpeg bundle failed (continuing)." >&2
+  }
+fi
+
+if ! command -v appimagetool &>/dev/null; then
+  echo "appimagetool is not on PATH."
   exit 1
 fi
 

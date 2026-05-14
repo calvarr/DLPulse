@@ -1,4 +1,8 @@
 # Build DLPulse (Flet) desktop bundles on Linux, Windows, and macOS.
+# FFmpeg bundling (MP3/DASH/remote_stream):
+#   Linux: packaging/linux/make_appimage.sh runs bundle_imageio_ffmpeg_into_linux_bundle.sh + static johnvansickle ffmpeg in AppImage usr/bin.
+#   Windows: packaging/windows/build_installer.ps1 runs bundle_ffmpeg_into_flet_release.ps1 (Release\bin); build_windows.ps1 does the same for portable builds.
+#   macOS: packaging/macos/make_dmg.sh runs bundle_ffmpeg_into_app.sh (Contents/Resources/bin).
 # Triggers: push to main/master, version tags v*, manual workflow_dispatch.
 #
 # Releases on GitHub:
@@ -133,9 +137,13 @@ jobs:
         if: matrix.target == 'macos'
         run: flet build macos --yes
 
+      # make_dmg.sh runs packaging/macos/bundle_ffmpeg_into_app.sh (ffmpeg + ffprobe into Contents/Resources/bin).
       - name: Build DMG (macOS)
         if: matrix.target == 'macos'
-        run: bash packaging/macos/make_dmg.sh .
+        shell: bash
+        env:
+          PYTHON: python
+        run: bash packaging/macos/make_dmg.sh "${{ github.workspace }}"
 
       - uses: actions/upload-artifact@v4
         with:
