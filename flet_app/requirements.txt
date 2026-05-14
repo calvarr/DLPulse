@@ -1,0 +1,12 @@
+# Flet run/build (no Textual TUI). From repo root: pip install -r flet_app/requirements.txt
+flet==0.85.1
+flet-cli==0.85.1
+flet-desktop==0.85.1
+mutagen>=1.47.0
+packaging>=23.0
+yt-dlp>=2024.1.1
+Flask>=3.0.0
+pychromecast>=14.0.0
+zeroconf>=0.132.0
+imageio-ffmpeg>=0.5.1
+flet-video==0.85.1

@@ -1,0 +1,221 @@
+# Build DLPulse (Flet) desktop bundles on Linux, Windows, and macOS.
+# Triggers: push to main/master, version tags v*, manual workflow_dispatch.
+#
+# Releases on GitHub:
+# - Push tag ``v*`` (e.g. v1.0.0) → release named after the tag + release notes.
+# - Push to ``main`` / ``master`` → prerelease ``continuous`` (tag ``continuous``),
+#   so artifacts appear without creating a version tag.
+
+name: Build DLPulse
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux
+            artifact_path: build
+            artifact_name: dlpulse-linux
+
+          - os: windows-latest
+            target: windows
+            artifact_path: build
+            artifact_name: dlpulse-windows
+
+          - os: macos-latest
+            target: macos
+            artifact_path: build
+            artifact_name: dlpulse-macos
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.target }})
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Linux system packages
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config libgtk-3-dev libglib2.0-dev \
+            libblkid-dev liblzma-dev patchelf cmake clang xz-utils \
+            libmpv-dev mpv
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Pin a stable Flutter; bump if flet build complains about SDK mismatch.
+          flutter-version: "3.27.4"
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor (summary)
+        run: flutter doctor -v
+
+      - name: Install Python project + deps
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install -e .
+          pip install -r flet_app/requirements.txt
+          pip install -r desktop_tui/requirements.txt
+
+      - name: Verify bundled ffmpeg dependency
+        # Use python -c (not a bash heredoc): Windows runners default to PowerShell, which does not support <<.
+        run: |
+          python -c "import imageio_ffmpeg as _i; _e=_i.get_ffmpeg_exe(); print('Bundled ffmpeg from imageio-ffmpeg:', _e)"
+
+      - name: Ensure app icon (pyproject references flet_app/icon.png)
+        run: |
+          if [ ! -f flet_app/icon.png ]; then
+            cp -f flet_app/cofe.png flet_app/icon.png
+          fi
+        shell: bash
+
+      - name: Record commit SHA for in-app GitHub update checks
+        shell: bash
+        run: printf '%s\n' "${GITHUB_SHA}" > flet_app/build_commit.txt
+
+      - name: Install appimagetool (Linux)
+        if: matrix.target == 'linux'
+        run: |
+          set -e
+          curl -fsSL -o /tmp/appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+
+      - name: flet build linux
+        if: matrix.target == 'linux'
+        env:
+          CFLAGS: "-Wno-macro-redefined"
+          CXXFLAGS: "-Wno-macro-redefined"
+          FLET_DESKTOP_FLAVOR: "full"
+        run: flet build linux --yes
+
+      - name: Build AppImage (Linux)
+        if: matrix.target == 'linux'
+        run: bash packaging/linux/make_appimage.sh .
+
+      # Rich Live + cp1252 on GHA Windows → UnicodeEncodeError (e.g. ● U+25CF).
+      - name: flet build windows
+        if: matrix.target == 'windows'
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: flet build windows --yes --no-rich-output
+
+      - name: Install NSIS (Windows)
+        if: matrix.target == 'windows'
+        run: choco install nsis --yes --no-progress
+
+      - name: Build NSIS installer (Windows)
+        if: matrix.target == 'windows'
+        run: pwsh -NoProfile -File packaging/windows/build_installer.ps1 "${{ github.workspace }}"
+
+      - name: flet build macos
+        if: matrix.target == 'macos'
+        run: flet build macos --yes
+
+      - name: Build DMG (macOS)
+        if: matrix.target == 'macos'
+        run: bash packaging/macos/make_dmg.sh .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: >-
+      success() &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: dlpulse-*
+          merge-multiple: false
+
+      - name: Zip artifacts and stage installers for release
+        run: |
+          set -e
+          cd artifacts
+          for d in */; do
+            [ -d "$d" ] || continue
+            base="${d%/}"
+            zip -r "${base}.zip" "$d"
+          done
+          cd ..
+          mkdir -p release-assets
+          shopt -s nullglob
+          for z in artifacts/*.zip; do
+            [ -f "$z" ] && cp -f "$z" release-assets/
+          done
+          find artifacts -type f \( -name "DLPulse-x86_64.AppImage" -o -name "DLPulse-Setup.exe" -o -name "DLPulse.dmg" \) -exec cp -f {} release-assets/ \; || true
+          ls -la release-assets/
+
+      - name: Verify release assets
+        run: |
+          test "$(find release-assets -type f | wc -l)" -ge 1
+
+      - name: Move "continuous" tag to this commit (main/master only)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa continuous -m "Continuous build" "${GITHUB_SHA}"
+          git push origin refs/tags/continuous --force
+
+      - name: GitHub Release (version tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: DLPulse ${{ github.ref_name }}
+          files: release-assets/*
+          generate_release_notes: true
+
+      - name: GitHub Release (continuous / default branch)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: DLPulse (continuous)
+          body: |
+            Automated build from `${{ github.sha }}`.
+
+            For a **stable** release, push a version tag (e.g. `v1.0.0`); each `v*` tag gets its own GitHub Release.
+          prerelease: true
+          allowUpdates: true
+          make_latest: false
+          files: release-assets/*

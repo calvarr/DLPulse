@@ -1,0 +1,55 @@
+[project]
+name = "dlpulse"
+version = "1.0.5"
+description = "DLPulse — media downloader with Chromecast support"
+requires-python = ">=3.11"
+
+# Flet bundle dependencies; optional ``pip install -e ".[tui]"`` for the Textual CLI/TUI.
+dependencies = [
+    "flet==0.85.1",
+    "yt-dlp>=2024.1.0",
+    "mutagen>=1.47.0",
+    "packaging>=23.0",
+    "Flask>=3.0.0",
+    "pychromecast>=14.0.0",
+    "zeroconf>=0.132.0",
+    "imageio-ffmpeg>=0.5.1",
+    "flet-video==0.85.1",
+    "flet-desktop==0.85.1",
+]
+
+[project.optional-dependencies]
+tui = [
+    "textual>=0.47.0",
+    "rich>=13.0.0",
+]
+
+[tool.flet]
+app_name = "DLPulse"
+bundle_id = "io.dlpulse.app"
+module_name = "flet_app.main"
+icon = "flet_app/icon.png"
+product_name = "DLPulse"
+company = "calvarr"
+desktop_flavor = "full"
+
+[tool.flet.linux]
+# flet build linux outputs a folder; for AppImage use appimagetool (see build_linux.sh)
+# Uncomment to set a separate Linux icon:
+# icon = "flet_app/icon.png"
+
+[tool.flet.windows]
+# Version shown in Add/Remove Programs
+file_version = "1.0.5.0"
+
+[tool.flet.macos]
+# macOS needs code signing for distribution; local unsigned builds still run for development
+bundle_version = "1.0.5"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["flet_app", "desktop_tui"]
+# desktop_tui stays a Python package for app.py / pure_cli (no duplicate cast_* in tree).
