@@ -1,6 +1,6 @@
 [project]
 name = "dlpulse"
-version = "1.0.5"
+version = "1.0.6"
 description = "DLPulse — media downloader with Chromecast support"
 requires-python = ">=3.11"
 
@@ -40,11 +40,11 @@ desktop_flavor = "full"
 
 [tool.flet.windows]
 # Version shown in Add/Remove Programs
-file_version = "1.0.5.0"
+file_version = "1.0.6.0"
 
 [tool.flet.macos]
 # macOS needs code signing for distribution; local unsigned builds still run for development
-bundle_version = "1.0.5"
+bundle_version = "1.0.6"
 
 [build-system]
 requires = ["setuptools>=61.0"]
